@@ -41,7 +41,8 @@ import {
 	type Robots
 } from './rules.ts';
 import { applySiteMetadata, setCover } from './site-metadata.ts';
-import { enrichCrawl } from './enrich.ts';
+import { enrichCrawl, isModelServiceReachable } from './enrich.ts';
+import { DEFAULT_MAX_TRAJECTORIES, exploreCrawl } from './explore.ts';
 import { cutFlows } from './flows.ts';
 import { recordFlowVideosInNewProcess } from './videos.ts';
 
@@ -128,14 +129,15 @@ export class CrawlContext {
 		label: string,
 		region: LinkRegion,
 		rect?: Rect
-	): Promise<void> {
-		await this.db
+	): Promise<RecordId> {
+		const [created] = await this.db
 			.query('RELATE $from->action->$to CONTENT $content', {
 				from: new RecordId('screen', from),
 				to: new RecordId('screen', to),
 				content: { crawl: this.job.id, kind, label, region, rect }
 			})
-			.collect();
+			.collect<[{ id: RecordId }[]]>();
+		return created[0].id;
 	}
 }
 
@@ -169,16 +171,21 @@ export async function executeCrawl(
 		}
 		return;
 	}
-	await processFinishedCrawl(db, job);
+	await processFinishedCrawl(db, job, signal);
 }
 
 /**
- * Cuts the flows of a finished crawl, then has the models fill in page types, section labels,
- * embeddings and flow names. Neither is part of the capture, so a failure only gets logged and the
- * crawl stays done: the model service may simply not be running, and `bun run flows` and
- * `bun run enrich` catch up later.
+ * Cuts the flows of a finished crawl, has the models fill in page types, section labels,
+ * embeddings and flow names, and lets them explore the site toward goals of their own. None of it
+ * is part of the capture, so a failure only gets logged and the crawl stays done: the model
+ * service may simply not be running, and `bun run flows`, `bun run enrich` and `bun run explore`
+ * catch up later.
  */
-async function processFinishedCrawl(db: Surreal, job: CrawlJob): Promise<void> {
+async function processFinishedCrawl(
+	db: Surreal,
+	job: CrawlJob,
+	signal: AbortSignal
+): Promise<void> {
 	try {
 		await cutFlows(db, String(job.id.id));
 		await recordFlowVideosInNewProcess(String(job.id.id));
@@ -192,24 +199,54 @@ async function processFinishedCrawl(db: Surreal, job: CrawlJob): Promise<void> {
 	} catch (error) {
 		console.warn(`enrichment skipped: ${error instanceof Error ? error.message : error}`);
 	}
+	try {
+		// Exploration needs the page types and descriptions that enrichment just wrote, and the
+		// model service to plan and to steer the browser. Its new screens and flows are enriched
+		// in a second pass.
+		if (
+			(job.max_trajectories ?? DEFAULT_MAX_TRAJECTORIES) > 0 &&
+			(await isModelServiceReachable())
+		) {
+			await exploreCrawl(db, job.id, { signal });
+			await enrichCrawl(db, job.id);
+		}
+	} catch (error) {
+		console.warn(`exploration skipped: ${error instanceof Error ? error.message : error}`);
+	}
+}
+
+/**
+ * The context of a crawl that already has screens, or none yet: counters and capture order carry
+ * on from what is stored, and the buttons stored by crawls of this site are known, so they aren't
+ * stored again.
+ */
+export async function createCrawlContext(
+	db: Surreal,
+	job: CrawlJob,
+	signal: AbortSignal
+): Promise<CrawlContext> {
+	const [sites, [crawl], lastSeqs, storedButtons] = await db
+		.query(
+			`SELECT * FROM $site;
+			 SELECT screens, elements FROM $crawl;
+			 SELECT VALUE seq FROM screen WHERE crawl = $crawl ORDER BY seq DESC LIMIT 1;
+			 SELECT name, rect FROM element WHERE site = $site AND viewport = $viewport AND kind = 'button'`,
+			{ site: job.site, crawl: job.id, viewport: job.viewport }
+		)
+		.collect<
+			[SiteRow[], { screens: number; elements: number }[], number[], { name: string; rect: Rect }[]]
+		>();
+	const ctx = new CrawlContext(db, localMedia(MEDIA_ROOT), job, sites[0], signal);
+	ctx.screens = crawl.screens;
+	ctx.elements = crawl.elements;
+	ctx.nextSeq = lastSeqs.length === 0 ? 0 : lastSeqs[0] + 1;
+	for (const button of storedButtons)
+		ctx.knownButtons.add(buttonKey(job.viewport, button.name, button.rect));
+	return ctx;
 }
 
 async function runCrawl(db: Surreal, job: CrawlJob, signal: AbortSignal): Promise<void> {
-	const [sites] = await db.query('SELECT * FROM $id', { id: job.site }).collect<[SiteRow[]]>();
-	const ctx = new CrawlContext(db, localMedia(MEDIA_ROOT), job, sites[0], signal);
-
-	// Buttons stored by earlier crawls of this site, so they aren't stored again.
-	const [storedButtons] = await db
-		.query(
-			"SELECT name, rect FROM element WHERE site = $site AND viewport = $viewport AND kind = 'button'",
-			{
-				site: job.site,
-				viewport: job.viewport
-			}
-		)
-		.collect<[{ name: string; rect: Rect }[]]>();
-	for (const button of storedButtons)
-		ctx.knownButtons.add(buttonKey(job.viewport, button.name, button.rect));
+	const ctx = await createCrawlContext(db, job, signal);
 
 	const { browser, context, userAgent } = await openBrowser(job.viewport);
 	try {
@@ -296,9 +333,9 @@ const MAX_CLICKS_PER_PAGE = 5;
 /** Share of max_screens that in-page states may use, so exploration can't starve real pages. */
 const MAX_STATE_SHARE = 0.35;
 /** Viewport images whose dHash differs by at least this many bits count as a visual change. */
-const STATE_HASH_DISTANCE = 6;
+export const STATE_HASH_DISTANCE = 6;
 /** Two states of the same page closer than this are the same state reached twice. */
-const SAME_STATE_HASH_DISTANCE = 3;
+export const SAME_STATE_HASH_DISTANCE = 3;
 /** Time for a menu or dialog to animate open (and for a navigation to start). */
 const AFTER_CLICK_MS = 700;
 

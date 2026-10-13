@@ -1,7 +1,14 @@
 // What the link rules are for: visiting the pages that show the most of a site first, and
 // recognising addresses that are the same page.
 import { describe, expect, test } from 'bun:test';
-import { isDestructive, normalizeUrl, scoreLink, urlKey } from '../crawler/rules.ts';
+import {
+	isDestructive,
+	isPersonalDataField,
+	looksLikePersonalData,
+	normalizeUrl,
+	scoreLink,
+	urlKey
+} from '../crawler/rules.ts';
 
 describe('link scoring', () => {
 	test('navigation links are visited before body links, and footer links last', () => {
@@ -94,5 +101,42 @@ describe('url identity', () => {
 		const second = normalizeUrl('https://example.com/pricing');
 
 		expect(urlKey(first!)).toBe(urlKey(second!));
+	});
+});
+
+describe('personal data fields', () => {
+	const field = (type: string, text = '', autocomplete = '') => ({ type, text, autocomplete });
+
+	test('email, password and phone fields are personal whatever they are called', () => {
+		expect(isPersonalDataField(field('email'))).toBe(true);
+		expect(isPersonalDataField(field('password', 'secret'))).toBe(true);
+		expect(isPersonalDataField(field('tel'))).toBe(true);
+	});
+
+	test('a plain text field is personal when its autocomplete or its words say so', () => {
+		expect(isPersonalDataField(field('text', '', 'given-name'))).toBe(true);
+		expect(isPersonalDataField(field('text', '', 'section-billing cc-number'))).toBe(true);
+		expect(isPersonalDataField(field('text', 'Your work email'))).toBe(true);
+		expect(isPersonalDataField(field('text', 'first_name'))).toBe(true);
+		expect(isPersonalDataField(field('text', 'Street and house number'))).toBe(true);
+		expect(isPersonalDataField(field('textarea', 'Card number'))).toBe(true);
+	});
+
+	test('search and filter fields are allowed even when they mention a name', () => {
+		expect(isPersonalDataField(field('search'))).toBe(false);
+		expect(isPersonalDataField(field('text', 'Search by name'))).toBe(false);
+		expect(isPersonalDataField(field('text', 'Filter integrations'))).toBe(false);
+		expect(isPersonalDataField(field('text', 'Find a template'))).toBe(false);
+	});
+
+	test('a message box is not personal data', () => {
+		expect(isPersonalDataField(field('textarea', 'How can we help?'))).toBe(false);
+	});
+
+	test('an email address or phone number is personal data wherever it is typed', () => {
+		expect(looksLikePersonalData('john@example.com')).toBe(true);
+		expect(looksLikePersonalData('+49 170 1234567')).toBe(true);
+		expect(looksLikePersonalData('dark mode')).toBe(false);
+		expect(looksLikePersonalData('2024 pricing')).toBe(false);
 	});
 });

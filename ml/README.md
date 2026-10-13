@@ -97,6 +97,52 @@ tree adapted to websites, and `GET /name-flow/categories` returns them. Only the
 are sent to the model, to fit its 16k context, so `captions` has at most 8 entries. Screenshots
 are shrunk to 768 px. About 1 to 2 s for a flow of 2 to 4 steps, 5 s for 8.
 
+### `POST /plan-goals`
+
+Lists what a visitor starting on one page of an already crawled site could want to do. The
+crawler calls it once per page, so a site's goals are many and specific, and merges the answers
+itself (`crawler/explore.ts`). Fields: `image` (the page's screenshot), `site_name`, `host`, `path`
+(the page every returned goal starts at), `page_type`, `title`, `description`, `interactive_parts`
+(JSON list of strings like `"form: Subscribe"`), `site_pages` (JSON list of `{"path", "page_type",
+"title"}` for the whole site), `nav_labels` (JSON list), `viewport` and `max_goals` (1 to 8, default 5).
+
+```json
+{ "goals": [{ "goal": "Switch the pricing table to yearly billing and compare the two cheapest plans",
+              "category": "pricing_and_plans", "start_path": "/pricing",
+              "success": "The table shows yearly prices for the Free and Pro plans", "actions": 3 }] }
+```
+
+`category` is one of `FLOW_CATEGORIES`, minus the ones that need an account or a payment
+(`onboarding`, `logging_in`, `checkout`, `settings`). `actions` is how many actions the model
+thinks the goal takes at least; the crawler tries the longer goals first. The list can be empty.
+
+The prompt (`plan_goals` in `refs_ml/vlm.py`) gives the page's screenshot, type, title and
+description, the interactive parts found on it, the navigation labels and a one-line map of the
+other pages. It asks for goals in a visitor's own words that name the real menu, tab or plan, that
+need an action on this page, that take several actions, that stay out of anything needing an
+account, and that differ from each other.
+
+How it got there, with Holo3.1-4B, judged by reading the goals of resend.com and linear.app:
+
+- Asking for the goals of the whole site in one call gave shallow goals and, for a 6-page site,
+  invented ones. Planning per page fixed that and keeps every call far inside the 16k context.
+- Asked politely, the model still listed "Log in with Google" and "Enter a password" when the
+  page was a login or signup page. So the crawler does not plan from such pages (it still plans
+  from the home page, where "start signing up and stop at the first field that asks for an email"
+  is a fine goal), and every goal carries a `needs_account_or_personal_data` flag that the model
+  fills in right after writing it. A 4B model breaks the rule while writing but judges the finished
+  sentence far more reliably, so goals flagged true are dropped.
+- Examples in the prompt were copied word for word, so the prompt describes the level of detail
+  instead of showing it.
+- The model does not reliably follow "at least two actions" or "do not list what the page already
+  shows": many goals are "open the Pricing page" from the navigation, or something the start page
+  satisfies on sight. The first kind is kept (visitors do that) and flagged by `actions`, so the
+  crawler tries them last. The second kind ends as an immediate "done" in the browser and is not
+  saved as a flow. Both are the limit of a 4B model, not of the prompt.
+
+A call takes 2 to 4 s per page, constrained by a JSON schema whose property order is the order of
+decoding: the goal, then the model's judgement of it, then its category and success criterion.
+
 ### `POST /embed`
 
 Fields: `image` and/or `text`, `dimensions` (64 to 2048, default 1024), `instruction`

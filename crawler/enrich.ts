@@ -18,6 +18,9 @@ const MODEL_SERVICE_URL = process.env.REFS_ML_URL ?? 'http://127.0.0.1:8022';
  */
 const EMBEDDING_DIMENSIONS = 1024;
 
+/** A service that is up answers a trivial request at once; this only bounds the wait on a dead one. */
+const REACHABLE_TIMEOUT_MS = 3000;
+
 /** How many items pass between two progress lines of a long run. */
 const PROGRESS_INTERVAL = 25;
 
@@ -26,7 +29,7 @@ const PROGRESS_INTERVAL = 25;
  * there yet because a running crawl records a screen before its media is written. The run goes on
  * and the next run tries the item again.
  */
-class ItemSkipped extends Error {}
+export class ItemSkipped extends Error {}
 
 interface ScreenToEnrich {
 	id: RecordId;
@@ -37,8 +40,10 @@ interface ScreenToEnrich {
 
 interface FlowToName {
 	id: RecordId;
+	/** Set on goal flows, which are born with a category and a title that naming must keep. */
+	category?: string;
 	/** The steps as stored, so naming only adds captions and leaves screens and actions alone. */
-	steps: { screen: RecordId; action?: RecordId; caption?: string }[];
+	steps: { screen: RecordId; action?: RecordId; caption?: string; thought?: string }[];
 	urls: string[];
 	images: string[];
 	/** Label of the click that led to each step; the first step has none. */
@@ -50,8 +55,26 @@ interface SectionToEnrich {
 	image: string;
 }
 
+/** Whether the model service answers at all, so callers can skip model work instead of failing. */
+export async function isModelServiceReachable(): Promise<boolean> {
+	try {
+		const response = await fetch(`${MODEL_SERVICE_URL}/name-flow/categories`, {
+			signal: AbortSignal.timeout(REACHABLE_TIMEOUT_MS)
+		});
+		return response.ok;
+	} catch (error) {
+		// A refused connection or a timeout is the answer "not reachable"; anything else is a bug.
+		if (
+			error instanceof TypeError ||
+			(error instanceof DOMException && error.name === 'TimeoutError')
+		)
+			return false;
+		throw error;
+	}
+}
+
 /** Posts a form to the model service. Requests go one at a time, as the GPU serves one at a time. */
-async function callModel<Result>(endpoint: string, form: FormData): Promise<Result> {
+export async function callModel<Result>(endpoint: string, form: FormData): Promise<Result> {
 	let response: Response;
 	try {
 		response = await fetch(`${MODEL_SERVICE_URL}${endpoint}`, { method: 'POST', body: form });
@@ -102,7 +125,8 @@ async function runPass<Item extends { id: RecordId }>(
  * Fills in what the models contribute to one crawl: `page_type` and `description` of its screens,
  * `label` of its sections, `embedding` of both, and `category`, `title` and step captions of its
  * flows. Only items without a result are sent, so it is safe to call again on a finished or
- * half-enriched crawl. A flow that already has a category is never renamed.
+ * half-enriched crawl. A flow that already has a category is never renamed; a goal flow, which
+ * is born with one, still gets its captions.
  */
 export async function enrichCrawl(
 	db: Surreal,
@@ -140,9 +164,9 @@ export async function enrichCrawl(
 				 	WHERE ${sectionsOfCrawl} AND label IS NONE;
 				 SELECT id, media AS image FROM element
 				 	WHERE ${sectionsOfCrawl} AND embedding IS NONE;
-				 SELECT id, steps, steps.screen.url AS urls, steps.screen.media.viewport AS images,
+				 SELECT id, category, steps, steps.screen.url AS urls, steps.screen.media.viewport AS images,
 				 	steps.action.label AS labels FROM flow
-				 	WHERE crawl = $crawl AND category IS NONE;`,
+				 	WHERE crawl = $crawl AND (category IS NONE OR (source = 'goal' AND steps[0].caption IS NONE));`,
 				{ crawl: crawlId }
 			)
 			.collect<
@@ -194,12 +218,18 @@ export async function enrichCrawl(
 				flow.urls.map((url, index) => ({ url, action_label: flow.labels[index] ?? '' }))
 			)
 		);
+		if (flow.category !== undefined) form.set('category', flow.category);
 		const result = await callModel<{ category: string; title: string; captions: string[] }>(
 			'/name-flow',
 			form
 		);
 		// The model only sees the first steps of a long flow, so later steps get no caption.
 		const steps = flow.steps.map((step, index) => ({ ...step, caption: result.captions[index] }));
+		// A flow that arrived with a category keeps it and its title, and only gains captions.
+		if (flow.category !== undefined) {
+			await db.query('UPDATE $flow SET steps = $steps', { flow: flow.id, steps }).collect();
+			return;
+		}
 		await db
 			.query('UPDATE $flow SET category = $category, title = $title, steps = $steps', {
 				flow: flow.id,

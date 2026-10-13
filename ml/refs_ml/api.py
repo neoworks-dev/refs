@@ -24,8 +24,10 @@ from .schemas import (
     FlowNaming,
     FlowStepInput,
     GiveUpAction,
+    GoalPlan,
     HistoryStep,
     NextAction,
+    PageSummary,
     ScreenClassification,
     ScrollAction,
     TypeAction,
@@ -75,6 +77,39 @@ async def name_flow(
     if category is not None and category not in FLOW_CATEGORIES:
         raise HTTPException(status_code=422, detail=f"category must be one of {FLOW_CATEGORIES}.")
     return await vlm.name_flow([await image.read() for image in images], step_inputs, category)
+
+
+@app.post("/plan-goals")
+async def plan_goals(
+    image: Annotated[UploadFile, File(description="Screenshot of the page to plan from")],
+    site_name: Annotated[str, Form()],
+    host: Annotated[str, Form()],
+    path: Annotated[str, Form(description="Path of the page, which every goal starts at")],
+    page_type: Annotated[str, Form()] = "",
+    title: Annotated[str, Form()] = "",
+    description: Annotated[str, Form()] = "",
+    interactive_parts: Annotated[
+        str, Form(description='JSON list of strings like "form: Subscribe" or "button: Monthly"')
+    ] = "[]",
+    site_pages: Annotated[
+        str, Form(description='JSON list of {"path", "page_type", "title"} of the whole site')
+    ] = "[]",
+    nav_labels: Annotated[str, Form(description="JSON list of the main navigation labels")] = "[]",
+    viewport: Annotated[str, Form(description="desktop or mobile")] = "desktop",
+    max_goals: Annotated[int, Form(ge=1, le=8)] = 5,
+) -> GoalPlan:
+    page = PageSummary(path=path, page_type=page_type, title=title, description=description)
+    return await vlm.plan_goals(
+        await image.read(),
+        site_name,
+        host,
+        page,
+        json.loads(interactive_parts),
+        [PageSummary.model_validate(other) for other in json.loads(site_pages)],
+        json.loads(nav_labels),
+        viewport,
+        max_goals,
+    )
 
 
 @app.get("/name-flow/categories")

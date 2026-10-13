@@ -1,4 +1,4 @@
-// `bun run crawl <url> [--viewport desktop|mobile|both] [--max-screens N] [--max-depth N]`
+// `bun run crawl <url> [--viewport desktop|mobile|both] [--max-screens N] [--max-depth N] [--max-trajectories N]`
 // Creates the site and crawl(s) the same way the UI does, then runs them inline without the worker.
 import { parseArgs } from 'node:util';
 import { configFromEnv, connect } from '#lib/server/surreal.ts';
@@ -11,14 +11,15 @@ const { values, positionals } = parseArgs({
 	options: {
 		viewport: { type: 'string', default: 'desktop' },
 		'max-screens': { type: 'string' },
-		'max-depth': { type: 'string' }
+		'max-depth': { type: 'string' },
+		'max-trajectories': { type: 'string' }
 	}
 });
 
 function fail(message: string): never {
 	console.error(message);
 	console.error(
-		'usage: bun run crawl <url> [--viewport desktop|mobile|both] [--max-screens N] [--max-depth N]'
+		'usage: bun run crawl <url> [--viewport desktop|mobile|both] [--max-screens N] [--max-depth N] [--max-trajectories N]'
 	);
 	process.exit(2);
 }
@@ -37,7 +38,8 @@ const viewports: Viewport[] =
 	values.viewport === 'both' ? VIEWPORTS : [values.viewport as Viewport];
 const limits = {
 	maxScreens: parseLimit('max-screens', values['max-screens']),
-	maxDepth: parseLimit('max-depth', values['max-depth'])
+	maxDepth: parseLimit('max-depth', values['max-depth']),
+	maxTrajectories: parseLimit('max-trajectories', values['max-trajectories'])
 };
 
 const shutdown = new AbortController();

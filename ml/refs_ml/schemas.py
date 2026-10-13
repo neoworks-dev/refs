@@ -88,6 +88,32 @@ class FlowNaming(BaseModel):
     confidence: float
 
 
+class PageSummary(BaseModel):
+    """One page of a crawled site as the planner sees it."""
+
+    path: str
+    page_type: str = ""
+    description: str = ""
+    title: str = ""
+
+
+class Goal(BaseModel):
+    """Something a visitor would plausibly try on the site, set by the model after surveying it."""
+
+    goal: str
+    category: str
+    start_path: str
+    # What the screen shows once the goal is reached, so a run can be judged against it.
+    success: str
+    # How many actions the model thinks the goal takes at least. The crawler tries the longer
+    # goals first, because a goal that follows one navigation link was already captured.
+    actions: int
+
+
+class GoalPlan(BaseModel):
+    goals: list[Goal]
+
+
 class ElementLabel(BaseModel):
     label: str
     confidence: float

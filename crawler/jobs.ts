@@ -23,6 +23,9 @@ export interface CrawlJob {
 	viewport: Viewport;
 	max_screens: number;
 	max_depth: number;
+	/** Missing on crawls from before exploration existed. */
+	max_trajectories?: number;
+	finished_at?: Date;
 }
 
 export const DEFAULT_MAX_SCREENS = 30;
@@ -57,7 +60,7 @@ export async function queueCrawl(
 	db: Surreal,
 	site: SiteRow,
 	viewport: Viewport,
-	limits: { maxScreens?: number; maxDepth?: number } = {}
+	limits: { maxScreens?: number; maxDepth?: number; maxTrajectories?: number } = {}
 ): Promise<CrawlJob> {
 	const [created] = await db
 		.query('CREATE ONLY crawl CONTENT $content', {
@@ -65,7 +68,11 @@ export async function queueCrawl(
 				site: site.id,
 				viewport,
 				max_screens: limits.maxScreens ?? DEFAULT_MAX_SCREENS,
-				max_depth: limits.maxDepth ?? DEFAULT_MAX_DEPTH
+				max_depth: limits.maxDepth ?? DEFAULT_MAX_DEPTH,
+				// Left out when not given, so the schema's default applies.
+				...(limits.maxTrajectories === undefined
+					? {}
+					: { max_trajectories: limits.maxTrajectories })
 			}
 		})
 		.collect<[CrawlJob]>();
@@ -151,7 +158,8 @@ export async function purgeCrawlData(db: Surreal, mediaRoot: string, job: CrawlJ
 	}
 	await db
 		.query(
-			`DELETE element WHERE crawl = $crawl;
+			`DELETE flow WHERE crawl = $crawl;
+			DELETE element WHERE crawl = $crawl;
 			DELETE action WHERE crawl = $crawl;
 			DELETE screen WHERE crawl = $crawl;
 			UPDATE $crawl SET screens = 0, elements = 0`,

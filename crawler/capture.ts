@@ -32,7 +32,7 @@ export const newId = customAlphabet('0123456789abcdefghijklmnopqrstuvwxyz', 16);
 // --- browser ---------------------------------------------------------------------------------
 
 /** Device pixel ratio for every capture. Crops are taken from the full-page image at this scale. */
-const DEVICE_SCALE_FACTOR = 2;
+export const DEVICE_SCALE_FACTOR = 2;
 /** Mobile is Playwright's iPhone 15 Pro viewport. */
 export const VIEWPORT_SIZES: Record<Viewport, { width: number; height: number }> = {
 	desktop: { width: 1440, height: 900 },
@@ -105,8 +105,16 @@ function pageInspectorScript(): Promise<string> {
 
 /** One browser per crawl, with one context so cookies (e.g. a dismissed banner) persist across pages. */
 export async function openBrowser(viewport: Viewport): Promise<BrowserSession> {
-	const browser = await chromium.launch({
-		// REFS_HEADED=1 opens visible windows, to watch what the crawler does.
+	const browser = await launchBrowser();
+	return { browser, ...(await openContext(browser, viewport)) };
+}
+
+/**
+ * Launches the browser, headless unless `REFS_HEADED=1` is set to watch what the crawler does.
+ * Launch as few as possible: see `closeBrowser` for why.
+ */
+export async function launchBrowser(): Promise<Browser> {
+	return await chromium.launch({
 		headless: process.env.REFS_HEADED !== '1',
 		// The worker handles SIGINT/SIGTERM itself so it can requeue the crawl before exiting;
 		// Playwright's own handlers would kill the browser mid-crawl and exit the process.
@@ -120,6 +128,16 @@ export async function openBrowser(viewport: Viewport): Promise<BrowserSession> {
 			'--hide-scrollbars'
 		]
 	});
+}
+
+/**
+ * A fresh context in a running browser, with its own cookies, as a visitor on a new device would
+ * have. Goal-directed exploration opens one per goal in a single browser.
+ */
+export async function openContext(
+	browser: Browser,
+	viewport: Viewport
+): Promise<{ context: BrowserContext; userAgent: string }> {
 	const chromeMajorVersion = browser.version().split('.')[0];
 
 	let userAgent: string;
@@ -153,7 +171,7 @@ export async function openBrowser(viewport: Viewport): Promise<BrowserSession> {
 		if (request.resourceType() === 'media' || isBlockedHost) return route.abort();
 		return route.continue();
 	});
-	return { browser, context, userAgent };
+	return { context, userAgent };
 }
 
 /** A close that works takes 10 to 100 ms, so this only bounds the hang described below. */
@@ -172,7 +190,7 @@ const BROWSER_CLOSE_TIMEOUT_MS = 5000;
  * - Closing the pages or the context first does not change it, so there is nothing to avoid.
  * Without a timeout the hung close would leave the crawl, and the worker, stuck in 'running'.
  */
-export async function closeBrowser(browser: Browser): Promise<void> {
+export async function closeBrowser(browser: Pick<Browser, 'close'>): Promise<void> {
 	let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
 	const timedOut = new Promise<void>((resolve) => {
 		timeoutHandle = setTimeout(() => {
@@ -378,7 +396,15 @@ export async function loadPage(
 		if (!(error instanceof errors.TimeoutError)) throw error;
 	}
 	await acceptCookieBanner(page, options);
+	await stabilizeLoadedPage(page);
+	return response;
+}
 
+/**
+ * Brings a page that has just loaded or navigated to a stable state: lazy content loaded by
+ * scrolling through it, a late cookie banner gone, fonts ready, scrolled back to the top.
+ */
+export async function stabilizeLoadedPage(page: Page): Promise<void> {
 	const { height: stepHeight } = page.viewportSize() ?? VIEWPORT_SIZES.desktop;
 	await page.evaluate(([step, maxSteps]) => window.pageInspector!.scrollThrough(step, maxSteps), [
 		stepHeight,
@@ -388,7 +414,6 @@ export async function loadPage(
 	await acceptCookieBanner(page, { waitForBanner: false });
 	await page.evaluate(() => document.fonts.ready);
 	await page.waitForTimeout(FINAL_SETTLE_MS);
-	return response;
 }
 
 // --- images ----------------------------------------------------------------------------------

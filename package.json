@@ -17,6 +17,7 @@
 		"crawl": "bun crawler/cli.ts",
 		"enrich": "bun crawler/enrich.ts",
 		"api-key": "bun scripts/api-key.ts",
+		"explore": "bun crawler/explore.ts",
 		"flows": "bun crawler/flows.ts",
 		"videos": "bun crawler/videos.ts"
 	},

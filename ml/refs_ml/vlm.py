@@ -21,7 +21,10 @@ from .schemas import (
     ElementLabel,
     FlowNaming,
     FlowStepInput,
+    Goal,
+    GoalPlan,
     HistoryStep,
+    PageSummary,
     ScreenClassification,
 )
 
@@ -211,6 +214,131 @@ async def name_flow(
         max_tokens=150 * len(steps) + 150,
     )
     return FlowNaming.model_validate_json(message["content"])
+
+
+# The prompt of one page needs the page's gist and a compact map of the rest of the site. With the
+# screenshot (about 1k tokens) it stays far below the 16k context.
+MAX_SITE_MAP_PAGES = 40
+MAX_INTERACTIVE_PARTS = 30
+MAX_GOAL_CHARACTERS = 160
+MAX_SUCCESS_CHARACTERS = 200
+# Categories whose flows need an account or a payment, which a visitor-level crawl never has.
+PLANNER_EXCLUDED_CATEGORIES = {"onboarding", "logging_in", "checkout", "settings"}
+
+
+async def plan_goals(
+    page_image: bytes,
+    site_name: str,
+    host: str,
+    page: PageSummary,
+    interactive_parts: list[str],
+    site_pages: list[PageSummary],
+    nav_labels: list[str],
+    viewport: str,
+    max_goals: int,
+) -> GoalPlan:
+    """Has the model list what a visitor could want to do starting on one page of a mapped site.
+
+    A site is planned page by page because one call for the whole site would not fit the context
+    and would only produce shallow goals. The goals are meant for the browser agent (`next_action`)
+    to try in a fresh browser at `page.path`, and their category comes from the fixed list, so the
+    crawler can store them without checking. Merging goals of different pages is the caller's job.
+    """
+    categories = [category for category in FLOW_CATEGORIES if category not in PLANNER_EXCLUDED_CATEGORIES]
+    data_uri, _ = image_to_data_uri(page_image, CLASSIFY_MAX_SIDE)
+
+    # Property order is decoding order: the goal is worded first, then categorised, then described.
+    schema = {
+        "type": "object",
+        "properties": {
+            "goals": {
+                "type": "array",
+                "minItems": 1,
+                "maxItems": max_goals,
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "goal": {"type": "string", "maxLength": MAX_GOAL_CHARACTERS},
+                        # The model judges its own sentence right after writing it. A 4B model
+                        # breaks the "no account" rule when it writes, but answers a plain
+                        # yes/no about the sentence it just wrote far more reliably.
+                        "needs_account_or_personal_data": {"type": "boolean"},
+                        "actions_needed": {"type": "integer", "minimum": 1, "maximum": 10},
+                        "category": {"type": "string", "enum": categories},
+                        "success": {"type": "string", "maxLength": MAX_SUCCESS_CHARACTERS},
+                    },
+                    "required": ["goal", "needs_account_or_personal_data", "actions_needed", "category", "success"],
+                    "additionalProperties": False,
+                },
+            }
+        },
+        "required": ["goals"],
+        "additionalProperties": False,
+    }
+    site_map = "\n".join(
+        f"- {other.path} [{other.page_type or 'unclassified'}] {other.title.strip()[:60]}"
+        for other in site_pages[:MAX_SITE_MAP_PAGES]
+    )
+    parts = "\n".join(f"- {part}" for part in interactive_parts[:MAX_INTERACTIVE_PARTS])
+    category_lines = "\n".join(f"- {category}: {FLOW_CATEGORY_DESCRIPTIONS[category]}" for category in categories)
+    prompt = (
+        f"You are listing what visitors of the website {site_name} ({host}) could want to do, so "
+        "that a browser agent can later try each one and record how it is done. The screenshot "
+        f"shows one page of the site on a {viewport} screen.\n\n"
+        f"This page: {page.path} [{page.page_type}] {page.title.strip()[:80]}\n"
+        f"What it shows: {page.description.strip()}\n\n"
+        f"Interactive parts found on it (menus, forms, fields, buttons):\n{parts or '(none found)'}\n\n"
+        f"Main navigation of the site: {', '.join(nav_labels) if nav_labels else '(none found)'}\n\n"
+        f"Other pages of the site:\n{site_map}\n\n"
+        f"List up to {max_goals} different things a visitor starting on THIS page could plausibly "
+        "want to do, as many as this page really supports and fewer when it supports few. For each:\n"
+        "- goal: one sentence in the visitor's own words, naming the concrete things on this "
+        "site (a menu, a tab, a plan, a feature, a field) rather than a generic activity.\n"
+        f"- category: what the goal is about. Allowed categories:\n{category_lines}\n"
+        "- needs_account_or_personal_data: true when the goal needs a login, an account, a payment "
+        "or typing personal data.\n"
+        "- actions_needed: how many clicks, typed entries or scrolls the goal takes at least.\n"
+        "- success: what the screen shows once the goal is reached.\n\n"
+        "Rules:\n"
+        "- Prefer goals that take several actions and use the page's interactive parts: open a "
+        "menu and pick an entry, switch a tab or a billing toggle, filter or search a list and "
+        "open a result, open one item out of many and read it, or go through a multi-step form "
+        "up to the point where it asks for personal data. A goal that only follows one "
+        "link of the navigation, like 'open the pricing page', is allowed but comes last.\n"
+        "- Visitors who are not signed in cannot log in, so never list logging in, signing in with "
+        "Google or GitHub, or anything that needs an account, a payment or personal data. "
+        "Starting to sign up or to request a demo is fine when the goal ends where the form asks "
+        "for personal data, like 'start the free trial and stop at the first field that asks for "
+        "an email'.\n"
+        "- A goal must need at least one action on this page. Do not list something the page "
+        "already shows, like 'view the list of customers' on the customers page.\n"
+        "- The goals must differ from each other. Do not list the same thing in other words.\n"
+        "- Only use what this page and this site offer according to the screenshot and the lists above.\n"
+        "- Name the real thing: the menu, tab, toggle, field, plan or section that is visible on "
+        "the page or listed above, not a generic activity.\n"
+    )
+    message = await chat(
+        [{"role": "user", "content": [
+            {"type": "image_url", "image_url": {"url": data_uri}},
+            {"type": "text", "text": prompt},
+        ]}],
+        response_format=json_schema_format("goal_plan", schema),
+        max_tokens=100 * max_goals + 100,
+    )  # fmt: skip
+    plan = json.loads(message["content"])
+    return GoalPlan(
+        goals=[
+            Goal(
+                start_path=page.path,
+                goal=goal["goal"],
+                category=goal["category"],
+                success=goal["success"],
+                actions=goal["actions_needed"],
+            )
+            for goal in plan["goals"]
+            if not goal["needs_account_or_personal_data"]
+        ]
+    )
 
 
 async def label_element(image_bytes: bytes, kind: str) -> ElementLabel:

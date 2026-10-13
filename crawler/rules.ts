@@ -1,6 +1,6 @@
 // Rules about what the crawler may visit and click: URL normalisation and scoring, which links are
 // worth following, what is never clicked, and robots.txt.
-import type { ClickTarget } from './page.ts';
+import type { ClickTarget, FocusedField } from './page.ts';
 
 const TRACKING_PARAM = /^(utm_.*|gclid|fbclid|ref|mc_.*)$/i;
 
@@ -124,6 +124,37 @@ export const DESTRUCTIVE_PATTERN =
 
 export function isDestructive(label: string): boolean {
 	return DESTRUCTIVE_PATTERN.test(label);
+}
+
+/** Input types that only ever hold personal data. */
+const PERSONAL_INPUT_TYPES = new Set(['email', 'password', 'tel']);
+
+/** Tokens of the HTML `autocomplete` attribute that name a person, a contact detail or a payment. */
+const PERSONAL_AUTOCOMPLETE =
+	/^(name|honorific-.*|given-name|additional-name|family-name|nickname|username|email|new-password|current-password|one-time-code|organization|organization-title|street-address|address-.*|postal-code|country.*|tel.*|bday.*|cc-.*|transaction-.*)$/;
+
+/** Words that mark a field as asking for personal data when its type and autocomplete don't say. */
+const PERSONAL_FIELD_TEXT =
+	/e-?mail|password|passwort|phone|mobile|\btel\b|first.?name|last.?name|full.?name|your.?name|user.?name|\bname\b|address|street|\bzip\b|postal|\bcity\b|card|cvc|cvv|expir|iban|company|organi[sz]ation|birth/i;
+
+/** A field that looks for something on the site. Its words ("search by name") must not count as personal. */
+const SEARCH_FIELD_TEXT = /search|filter|find|suche|query/i;
+
+/**
+ * Whether typing into this field would enter personal data: an email, password, name, phone
+ * number, address or payment detail. Search and filter fields are fine, whatever words they use.
+ */
+export function isPersonalDataField(field: FocusedField): boolean {
+	if (PERSONAL_INPUT_TYPES.has(field.type)) return true;
+	const autocompleteTokens = field.autocomplete.toLowerCase().split(/\s+/);
+	if (autocompleteTokens.some((token) => PERSONAL_AUTOCOMPLETE.test(token))) return true;
+	if (field.type === 'search' || SEARCH_FIELD_TEXT.test(field.text)) return false;
+	return PERSONAL_FIELD_TEXT.test(field.text);
+}
+
+/** Text that is itself personal data, like an email address or a phone number the model made up. */
+export function looksLikePersonalData(text: string): boolean {
+	return /\S+@\S+\.\S+/.test(text) || /\+?\d[\d\s().-]{7,}\d/.test(text);
 }
 
 /**

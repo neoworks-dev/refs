@@ -53,6 +53,11 @@ tasks:
     cmds:
       - bun crawler/enrich.ts {{.CLI_ARGS}}
 
+  explore:
+    desc: Let the model set goals for the current crawls and try them, optionally of one site slug
+    cmds:
+      - bun crawler/explore.ts {{.CLI_ARGS}}
+
   flows:
     desc: Recut the flows of the current crawls, optionally of one site slug
     cmds:
