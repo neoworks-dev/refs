@@ -30,16 +30,19 @@ import type { ClickTarget } from './page.ts';
 import {
 	displayPath,
 	fetchRobots,
+	chooseClickTargets,
 	isCrawlable,
-	isDestructive,
 	isSameSite,
 	normalizeUrl,
 	pathShape,
 	scoreLink,
 	urlKey,
+	type LinkRegion,
 	type Robots
 } from './rules.ts';
 import { applySiteMetadata, setCover } from './site-metadata.ts';
+import { enrichCrawl } from './enrich.ts';
+import { cutFlows } from './flows.ts';
 
 /** Where screenshots and crops are written; the SvelteKit app serves the same directory. */
 export const MEDIA_ROOT = process.env.MEDIA_DIR ?? 'data/media';
@@ -122,13 +125,14 @@ export class CrawlContext {
 		to: string,
 		kind: 'navigate' | 'click',
 		label: string,
+		region: LinkRegion,
 		rect?: Rect
 	): Promise<void> {
 		await this.db
 			.query('RELATE $from->action->$to CONTENT $content', {
 				from: new RecordId('screen', from),
 				to: new RecordId('screen', to),
-				content: { crawl: this.job.id, kind, label, rect }
+				content: { crawl: this.job.id, kind, label, region, rect }
 			})
 			.collect();
 	}
@@ -162,6 +166,27 @@ export async function executeCrawl(
 			console.error(`crawl ${job.id.id} failed: ${message}`);
 			await finishCrawl(db, job.id, { error: message });
 		}
+		return;
+	}
+	await processFinishedCrawl(db, job);
+}
+
+/**
+ * Cuts the flows of a finished crawl, then has the models fill in page types, section labels,
+ * embeddings and flow names. Neither is part of the capture, so a failure only gets logged and the
+ * crawl stays done: the model service may simply not be running, and `bun run flows` and
+ * `bun run enrich` catch up later.
+ */
+async function processFinishedCrawl(db: Surreal, job: CrawlJob): Promise<void> {
+	try {
+		await cutFlows(db, String(job.id.id));
+	} catch (error) {
+		console.warn(`cutting flows failed: ${error instanceof Error ? error.message : error}`);
+	}
+	try {
+		await enrichCrawl(db, job.id);
+	} catch (error) {
+		console.warn(`enrichment skipped: ${error instanceof Error ? error.message : error}`);
 	}
 }
 
@@ -208,6 +233,8 @@ interface Candidate {
 	/** Page screen whose link led here (undefined for the start URL). */
 	fromScreen?: string;
 	label: string;
+	/** Where on the source screen the link sat. */
+	region: LinkRegion;
 	/** Rect of the link on the source screen, when it was visible. */
 	rect?: Rect;
 }
@@ -289,7 +316,13 @@ class PageCrawler {
 
 	async run(): Promise<void> {
 		const { ctx } = this;
-		this.frontier.add({ url: ctx.site.url, depth: 0, score: Infinity, label: '' });
+		this.frontier.add({
+			url: ctx.site.url,
+			depth: 0,
+			score: Infinity,
+			label: '',
+			region: 'other'
+		});
 
 		for (;;) {
 			await ctx.throwIfStopped();
@@ -359,6 +392,7 @@ class PageCrawler {
 				screen.id,
 				'navigate',
 				candidate.label,
+				candidate.region,
 				candidate.rect
 			);
 		}
@@ -405,6 +439,7 @@ class PageCrawler {
 				score: scoreLink(url, depth + 1, link.region),
 				fromScreen: screen.id,
 				label: link.text,
+				region: link.region,
 				rect
 			});
 		}
@@ -420,16 +455,7 @@ class PageCrawler {
 	private async exploreClicks(target: ExplorationTarget, stateBudget: number): Promise<void> {
 		const { ctx, page } = this;
 		const targets = await page.evaluate(() => window.pageInspector!.clickTargets());
-		const seenNames = new Set<string>();
-		const chosen = targets
-			.sort((first, second) => first.rank - second.rank)
-			.filter((clickTarget) => {
-				const name = clickTarget.name.toLowerCase();
-				if (isDestructive(name) || seenNames.has(name)) return false;
-				seenNames.add(name);
-				return true;
-			})
-			.slice(0, MAX_CLICKS_PER_PAGE);
+		const chosen = chooseClickTargets(targets, MAX_CLICKS_PER_PAGE);
 
 		const capturedHashes: string[] = [];
 		for (const [position, clickTarget] of chosen.entries()) {
@@ -486,6 +512,7 @@ class PageCrawler {
 					score: scoreLink(destination, target.depth + 1, 'nav'),
 					fromScreen: target.screen.id,
 					label: clickTarget.name,
+					region: clickTarget.region,
 					rect: clickTarget.rect
 				});
 			}
@@ -512,7 +539,14 @@ class PageCrawler {
 			newPanels
 		});
 		ctx.states++;
-		await ctx.createAction(target.screen.id, state.id, 'click', clickTarget.name, clickTarget.rect);
+		await ctx.createAction(
+			target.screen.id,
+			state.id,
+			'click',
+			clickTarget.name,
+			clickTarget.region,
+			clickTarget.rect
+		);
 	}
 }
 

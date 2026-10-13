@@ -1,0 +1,37 @@
+<!doctype html>
+<title>Notice without cookie markup</title>
+<style>
+	body {
+		margin: 0;
+		font-family: sans-serif;
+	}
+	.notice {
+		position: fixed;
+		left: 16px;
+		bottom: 16px;
+		width: 360px;
+		padding: 16px;
+		background: white;
+		box-shadow: 0 2px 12px #0004;
+	}
+</style>
+<main>
+	<h1>Welcome</h1>
+	<section>
+		<p>You have been invited to join the team.</p>
+		<button onclick="window.invitationAccepted = true">Accept</button>
+	</section>
+</main>
+<!-- Appears a second after load, the way a script-injected banner does. Nothing here says "cookie" except the text. -->
+<script>
+	setTimeout(() => {
+		document.body.insertAdjacentHTML(
+			'beforeend',
+			`
+			<div class="notice">
+				<p>This site uses tracking technologies.</p>
+				<button onclick="this.parentElement.remove()">Accept all</button>
+			</div>`
+		);
+	}, 1000);
+</script>

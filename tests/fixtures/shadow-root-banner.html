@@ -1,0 +1,22 @@
+<!doctype html>
+<title>Banner in an open shadow root</title>
+<style>
+	body {
+		margin: 0;
+		font-family: sans-serif;
+	}
+</style>
+<main><h1>Welcome</h1></main>
+<!-- Usercentrics mounts #usercentrics-root and renders into its shadow root. This one leaves out the
+     data-testid attributes, so only the generic rules can find the button. -->
+<div id="usercentrics-root"></div>
+<script>
+	const root = document.getElementById('usercentrics-root').attachShadow({ mode: 'open' });
+	root.innerHTML = `
+		<style>.dialog { position: fixed; left: 0; right: 0; bottom: 0; padding: 24px; background: #123; color: white; }</style>
+		<div class="dialog">
+			<p>We use services that need your consent.</p>
+			<button onclick="window.dispatchEvent(new Event('settings'))">Mehr Optionen</button>
+			<button onclick="this.closest('.dialog').remove()">Alle erlauben</button>
+		</div>`;
+</script>

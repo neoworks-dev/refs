@@ -1,0 +1,54 @@
+<!doctype html>
+<title>Links styled as buttons</title>
+<style>
+	body {
+		margin: 0;
+		padding: 40px;
+		font-family: sans-serif;
+		font-size: 16px;
+	}
+	a {
+		color: #06c;
+	}
+	.cta {
+		display: inline-block;
+		padding: 8px 20px;
+		background: #111;
+		color: white;
+		border-radius: 6px;
+		text-decoration: none;
+	}
+	.outline {
+		display: inline-block;
+		padding: 8px 20px;
+		border: 1px solid #111;
+		border-radius: 6px;
+		text-decoration: none;
+		color: #111;
+	}
+	.tile {
+		display: block;
+		height: 200px;
+		padding: 20px;
+		background: #eee;
+	}
+	button {
+		padding: 8px 16px;
+	}
+	.icon-fragment {
+		width: 10px;
+		height: 10px;
+		padding: 0;
+	}
+</style>
+<p>
+	Read the <a href="/docs">documentation</a> or
+	<a href="/pricing" style="text-decoration: underline">see pricing</a> before you start.
+</p>
+<p>
+	<a class="cta" href="/start">Get started</a>
+	<a class="outline" href="/demo">Book a demo</a>
+	<button>Subscribe</button>
+	<button class="icon-fragment" aria-label="Dot"></button>
+</p>
+<a class="tile" href="/blog/post">A clickable card that happens to be a link with a title</a>

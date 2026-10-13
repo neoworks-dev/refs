@@ -1,0 +1,32 @@
+<!doctype html>
+<title>Entrance animation triggered by scrolling</title>
+<style>
+	body {
+		margin: 0;
+		font-family: sans-serif;
+	}
+	.spacer {
+		height: 1600px;
+	}
+	/* Invisible until an observer adds .in, then fades in over 1.6 seconds. */
+	.reveal {
+		opacity: 0;
+		transition: opacity 1.6s;
+		height: 300px;
+		background: #123;
+		color: white;
+		padding: 40px;
+	}
+	.reveal.in {
+		opacity: 1;
+	}
+</style>
+<div class="spacer"></div>
+<div class="reveal" id="late"><h2>Appears when scrolled to</h2></div>
+<div class="spacer"></div>
+<script>
+	const observer = new IntersectionObserver((entries) => {
+		for (const entry of entries) if (entry.isIntersecting) entry.target.classList.add('in');
+	});
+	observer.observe(document.getElementById('late'));
+</script>

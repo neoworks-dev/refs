@@ -1,5 +1,6 @@
 // Rules about what the crawler may visit and click: URL normalisation and scoring, which links are
 // worth following, what is never clicked, and robots.txt.
+import type { ClickTarget } from './page.ts';
 
 const TRACKING_PARAM = /^(utm_.*|gclid|fbclid|ref|mc_.*)$/i;
 
@@ -123,6 +124,23 @@ export const DESTRUCTIVE_PATTERN =
 
 export function isDestructive(label: string): boolean {
 	return DESTRUCTIVE_PATTERN.test(label);
+}
+
+/**
+ * The controls to click on a page: best rank first, without destructive or committing ones and
+ * without repeats of a label (a row of identical "Expand" triggers reveals the same thing).
+ */
+export function chooseClickTargets(targets: ClickTarget[], limit: number): ClickTarget[] {
+	const seenNames = new Set<string>();
+	return [...targets]
+		.sort((first, second) => first.rank - second.rank)
+		.filter((target) => {
+			const name = target.name.toLowerCase();
+			if (isDestructive(name) || seenNames.has(name)) return false;
+			seenNames.add(name);
+			return true;
+		})
+		.slice(0, limit);
 }
 
 interface RobotsRule {

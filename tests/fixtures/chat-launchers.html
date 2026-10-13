@@ -1,0 +1,84 @@
+<!doctype html>
+<title>Chat widgets and fixed things that are not</title>
+<style>
+	body {
+		margin: 0;
+		font-family: sans-serif;
+		height: 2000px;
+	}
+	button {
+		font: inherit;
+	}
+	/* First-party chat teaser plus launcher, the way stripe.com renders it: a full-width fixed layer
+	   with pointer-events none, and the card and button inside. */
+	#shell {
+		position: fixed;
+		left: 0;
+		right: 0;
+		bottom: 0;
+		height: 180px;
+		pointer-events: none;
+	}
+	#teaser {
+		position: absolute;
+		right: 16px;
+		bottom: 16px;
+		width: 380px;
+		height: 160px;
+		background: white;
+		box-shadow: 0 2px 12px #0004;
+		pointer-events: auto;
+	}
+	#chat-button {
+		position: absolute;
+		right: 16px;
+		bottom: 16px;
+		width: 140px;
+		height: 40px;
+	}
+	/* A round bubble with only an icon and an aria-label. */
+	#bubble {
+		position: fixed;
+		left: 20px;
+		bottom: 20px;
+		width: 56px;
+		height: 56px;
+		border-radius: 50%;
+		background: #06c;
+	}
+	/* Real page chrome that mentions help or support, and must stay visible. */
+	#help-nav {
+		position: fixed;
+		top: 0;
+		left: 0;
+		right: 0;
+		height: 48px;
+		background: #eee;
+	}
+	#cookie-bar {
+		position: fixed;
+		left: 0;
+		bottom: 0;
+		width: 600px;
+		height: 60px;
+		background: #222;
+		color: white;
+	}
+	#help-article {
+		margin: 100px 40px;
+		width: 500px;
+	}
+</style>
+<nav id="help-nav"><a href="/help">Help center</a></nav>
+<div id="help-article">
+	<h1>Getting help</h1>
+	<a href="/support">Contact support</a>
+</div>
+<div id="cookie-bar">Help us improve: we use cookies.</div>
+<div id="bubble" role="button" aria-label="Open chat"></div>
+<div id="shell">
+	<div id="teaser">
+		<p>9 sales reps available</p>
+		<button>Close</button><button id="chat-button" aria-label="Chat with sales">Chat now</button>
+	</div>
+</div>

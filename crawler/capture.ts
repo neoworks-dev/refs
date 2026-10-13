@@ -16,7 +16,7 @@ import {
 	type Response
 } from 'playwright';
 import { customAlphabet } from 'nanoid';
-import sharp from 'sharp';
+import sharp, { type Sharp } from 'sharp';
 import { RecordId } from '#lib/server/surreal.ts';
 import type { ElementKind, Rect, Viewport } from '#lib/types.ts';
 import type { CrawlContext } from './crawl.ts';
@@ -155,12 +155,21 @@ export async function openBrowser(viewport: Viewport): Promise<BrowserSession> {
 	return { browser, context, userAgent };
 }
 
-const BROWSER_CLOSE_TIMEOUT_MS = 10_000;
+/** A close that works takes 10 to 100 ms, so this only bounds the hang described below. */
+const BROWSER_CLOSE_TIMEOUT_MS = 5000;
 
 /**
- * Closes the browser without waiting forever. Closing takes milliseconds, but under Bun the close
- * promise has been seen to never settle after the chrome process had already exited, and a hung
- * close would leave the crawl (and the worker) stuck in 'running'.
+ * Closes the browser without waiting forever.
+ *
+ * Under Bun, `browser.close()` sometimes never settles. What we found when chasing it down:
+ * - It happens inside crawls (the second browser of a `--viewport both` run hung every time we
+ *   looked), but not in isolated loops of launch, load, screenshot and close: 0 hangs in about
+ *   200 closes, with or without a database connection, popup handlers, sharp, fetch, clicks or CPU load.
+ * - When it hangs, Chrome has already exited: it has no child process left, so nothing leaks.
+ *   Playwright's `disconnected` event fires in some hangs and not in others. So the browser is
+ *   gone and Bun is not delivering the process or pipe notification Playwright waits for.
+ * - Closing the pages or the context first does not change it, so there is nothing to avoid.
+ * Without a timeout the hung close would leave the crawl, and the worker, stuck in 'running'.
  */
 export async function closeBrowser(browser: Browser): Promise<void> {
 	let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
@@ -192,14 +201,28 @@ const KNOWN_ACCEPT_BUTTONS = [
 	'button[data-testid="uc-accept-all-button"]' // Usercentrics
 ].join(', ');
 
-/** Anything whose id, class or label says it is a cookie/consent/privacy banner. */
-const COOKIE_BANNER = ['cookie', 'consent', 'gdpr', 'privacy']
+/**
+ * Anything whose id, class or label says it is a cookie/consent/privacy banner. The consent
+ * managers are named too, because some mount a bare host element (`#usercentrics-root`) whose
+ * banner lives in a shadow root and whose own markup never says "cookie".
+ */
+const COOKIE_BANNER = [
+	'cookie',
+	'consent',
+	'gdpr',
+	'privacy',
+	'usercentrics',
+	'onetrust',
+	'cookiebot',
+	'didomi',
+	'trustarc'
+]
 	.flatMap((word) => [`[id*="${word}" i]`, `[class*="${word}" i]`, `[aria-label*="${word}" i]`])
 	.join(', ');
 
 /** Button names that accept everything. "Reject", "Manage" and "Settings" must not match. */
 const ACCEPT_LABEL =
-	/^(accept( all)?( cookies)?( (&|and) close)?|i accept|i agree|agree( and (close|continue))?|allow all( cookies)?|allow cookies|allow|got it|ok|okay|alle akzeptieren|akzeptieren|zustimmen|einverstanden)$/i;
+	/^(accept( all)?( cookies)?( (&|and) close)?|i accept|i agree|agree( and (close|continue))?|allow all( cookies)?|allow cookies|allow|got it|ok|okay|alle (akzeptieren|erlauben|zulassen)|akzeptieren|zustimmen|einverstanden)$/i;
 
 /** Consent managers that render in an iframe usually give it away in the iframe URL. */
 const CONSENT_IFRAME_URL =
@@ -211,6 +234,9 @@ const BANNER_POLL_INTERVAL_MS = 250;
 const BANNER_CLICK_TIMEOUT_MS = 2000;
 const BANNER_EXIT_TIMEOUT_MS = 3000;
 
+/** Playwright's error messages for a frame that was removed or navigated away. */
+const FRAME_GONE_MESSAGE = /detached|destroyed|closed/i;
+
 /**
  * A frame can be detached or navigated away while we ask about it (consent iframes do this right
  * after being accepted). That is not an error here, the banner is simply gone.
@@ -219,7 +245,7 @@ async function isVisibleIfAttached(locator: Locator): Promise<boolean> {
 	try {
 		return await locator.isVisible();
 	} catch (error) {
-		if (error instanceof Error && /detached|destroyed|closed/i.test(error.message)) return false;
+		if (error instanceof Error && FRAME_GONE_MESSAGE.test(error.message)) return false;
 		throw error;
 	}
 }
@@ -227,6 +253,9 @@ async function isVisibleIfAttached(locator: Locator): Promise<boolean> {
 /** The "accept all" button of a visible cookie banner, in the page or in any of its iframes. */
 async function findAcceptButton(page: Page): Promise<Locator | undefined> {
 	for (const frame of page.frames()) {
+		// A frame with no URL hasn't loaded a document yet (a lazy iframe far down the page), so it
+		// can't hold a banner, and Playwright waits forever for a document to query in it (cal.com).
+		if (frame.url() === '') continue;
 		const acceptButton = acceptButtonLocator(frame, frame === page.mainFrame()).first();
 		if (await isVisibleIfAttached(acceptButton)) return acceptButton;
 	}
@@ -247,15 +276,22 @@ async function findFloatingNoticeButton(frame: Frame): Promise<Locator | undefin
 	for (const candidate of candidates) {
 		if (!(await isVisibleIfAttached(candidate))) continue;
 		const isInFloatingConsentNotice = await candidate.evaluate((button, noticeText) => {
+			// Banners in a shadow root (Usercentrics) have no parent element at the top of the
+			// root, so continue from the shadow host.
+			const parentAcrossShadowRoots = (node: Element) =>
+				node.parentElement ??
+				(node.getRootNode() instanceof ShadowRoot ? (node.getRootNode() as ShadowRoot).host : null);
 			// The nearest fixed or sticky ancestor is the floating box the button belongs to.
 			for (
-				let node = button.parentElement;
+				let node = parentAcrossShadowRoots(button);
 				node && node !== document.body;
-				node = node.parentElement
+				node = parentAcrossShadowRoots(node)
 			) {
 				const { position } = getComputedStyle(node);
 				if (position === 'fixed' || position === 'sticky') {
-					return new RegExp(noticeText, 'i').test(node.textContent ?? '');
+					// A shadow host's text content leaves out what its shadow root renders.
+					const text = (node.shadowRoot?.textContent ?? '') + (node.textContent ?? '');
+					return new RegExp(noticeText, 'i').test(text);
 				}
 			}
 			return false;
@@ -304,6 +340,8 @@ async function clickUntilGone(acceptButton: Locator): Promise<boolean> {
 		await acceptButton.waitFor({ state: 'hidden', timeout: BANNER_EXIT_TIMEOUT_MS });
 		return true;
 	} catch (error) {
+		// A consent iframe removes its own frame when accepted: the banner is gone, as wanted.
+		if (error instanceof Error && FRAME_GONE_MESSAGE.test(error.message)) return true;
 		// Covered by another overlay, or the banner stays after the click. Carry on without it.
 		if (error instanceof errors.TimeoutError) return false;
 		throw error;
@@ -436,6 +474,7 @@ export async function captureScreen(request: CaptureRequest): Promise<CapturedSc
 	const keyPrefix = `sites/${ctx.siteId}/${ctx.job.viewport}/${screenId}`;
 
 	const title = await page.title();
+	await page.evaluate(() => window.pageInspector!.hideChatLaunchers());
 	const found = await page.evaluate(() => window.pageInspector!.findElements());
 	const viewportPng = await viewportScreenshot(page);
 	// Taller pages are cut off at the cap with a clip, because webp can't encode huge images.
@@ -508,7 +547,28 @@ export async function captureScreen(request: CaptureRequest): Promise<CapturedSc
 	return { id: screenId, imageHash, fullHeight, foundElements: found.elements };
 }
 
-/** Crops each element (plus padding) out of the full-page image, and saves the crop with its record. */
+/**
+ * A crop whose colour channels vary less than this (standard deviation on a 0 to 255 scale, the
+ * largest of the channels) shows nothing to learn from. How the value was chosen, from crawls of
+ * vercel.com, raycast.com, spotify.com, stripe.com and penny.de: the 26 blank crops among the first
+ * 633 measured exactly 0 (sections that had not painted, see `paintOffscreenContent` in page.ts)
+ * or 2.2 (a list fading out under a gradient). Of the 997 crops stored by the re-crawls, the
+ * quietest are an empty text field at 3.0 and a pale header at 4.1, and a nearly black section
+ * with faint icons is 5.7. So 3 separates "nothing there" from "little there, but real".
+ */
+const MIN_CROP_STANDARD_DEVIATION = 3;
+
+/** Whether an image is practically a single colour (see `MIN_CROP_STANDARD_DEVIATION`). */
+export async function isBlankImage(image: Sharp): Promise<boolean> {
+	const { channels } = await image.stats();
+	return Math.max(...channels.map((channel) => channel.stdev)) < MIN_CROP_STANDARD_DEVIATION;
+}
+
+/**
+ * Crops each element (plus padding) out of the full-page image, and saves the crop with its
+ * record. Crops that are practically one colour are skipped: they are elements that draw nothing
+ * themselves, or whose content hadn't painted, and would only add noise to the library.
+ */
 async function storeElements(
 	ctx: CrawlContext,
 	screen: RecordId,
@@ -520,18 +580,25 @@ async function storeElements(
 	// Decoded once: cropping from the PNG directly would decode the whole page for every element.
 	const { data, info } = await sharp(fullPng).raw().toBuffer({ resolveWithObject: true });
 
+	let blankCrops = 0;
 	for (const element of elements) {
 		const { x, y, w, h } = element.rect;
 		const left = Math.max(0, Math.floor((x - CROP_PADDING) * DEVICE_SCALE_FACTOR));
 		const top = Math.max(0, Math.floor((y - CROP_PADDING) * DEVICE_SCALE_FACTOR));
 		const right = Math.min(info.width, Math.ceil((x + w + CROP_PADDING) * DEVICE_SCALE_FACTOR));
 		const bottom = Math.min(info.height, Math.ceil((y + h + CROP_PADDING) * DEVICE_SCALE_FACTOR));
-		const crop = await sharp(data, {
+		const cropPixels = await sharp(data, {
 			raw: { width: info.width, height: info.height, channels: info.channels }
 		})
 			.extract({ left, top, width: Math.max(1, right - left), height: Math.max(1, bottom - top) })
-			.webp({ quality: WEBP_QUALITY })
-			.toBuffer();
+			.raw()
+			.toBuffer({ resolveWithObject: true });
+		const cropImage = sharp(cropPixels.data, { raw: cropPixels.info });
+		if (await isBlankImage(cropImage)) {
+			blankCrops++;
+			continue;
+		}
+		const crop = await cropImage.webp({ quality: WEBP_QUALITY }).toBuffer();
 
 		const elementId = newId();
 		const key = `${keyPrefix}/el/${elementId}.webp`;
@@ -552,4 +619,5 @@ async function storeElements(
 			.collect();
 		ctx.elements++;
 	}
+	if (blankCrops > 0) console.log(`  skipped ${blankCrops} blank crop(s)`);
 }

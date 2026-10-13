@@ -1,0 +1,37 @@
+<!doctype html>
+<title>OneTrust style banner</title>
+<style>
+	body {
+		margin: 0;
+		font-family: sans-serif;
+	}
+	#onetrust-banner-sdk {
+		position: fixed;
+		bottom: 0;
+		left: 0;
+		right: 0;
+		padding: 24px;
+		background: #222;
+		color: white;
+	}
+</style>
+<main>
+	<h1>Welcome</h1>
+	<!-- Not a consent control: an "Accept" in the page content must survive. -->
+	<button id="invitation" onclick="window.invitationAccepted = true">Accept</button>
+</main>
+<div id="onetrust-consent-sdk">
+	<div id="onetrust-banner-sdk">
+		<p>We use cookies to improve your experience.</p>
+		<button id="onetrust-pc-btn-handler" onclick="window.settingsOpened = true">
+			Cookie Settings
+		</button>
+		<button id="onetrust-reject-all-handler" onclick="window.rejected = true">Reject All</button>
+		<button
+			id="onetrust-accept-btn-handler"
+			onclick="document.getElementById('onetrust-consent-sdk').remove()"
+		>
+			Accept All Cookies
+		</button>
+	</div>
+</div>

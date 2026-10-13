@@ -29,6 +29,7 @@ export interface PageLink {
 
 export interface ClickTarget {
 	name: string;
+	region: LinkRegion;
 	/** Lower ranks are tried first. */
 	rank: number;
 	rect: Rect;
@@ -183,6 +184,15 @@ function pageDetails(): PageDetails {
 	};
 }
 
+/** Which part of the page an element sits in, as stored on the actions that start from it. */
+function regionOf(element: Element): LinkRegion {
+	// Footer is checked first: footers are full of <nav>s, but those links are low value.
+	if (element.closest('footer, [role="contentinfo"]')) return 'footer';
+	if (element.closest('header, nav, [role="banner"], [role="navigation"]')) return 'nav';
+	if (element.closest('main, [role="main"]')) return 'main';
+	return 'other';
+}
+
 /** Bounds the work on huge pages (mega footers, link farms). */
 const MAX_LINKS = 800;
 
@@ -193,16 +203,10 @@ function links(): PageLink[] {
 		// SVG <a> elements expose `href` as an SVGAnimatedString.
 		if (typeof anchor.href !== 'string') continue;
 
-		// Footer is checked first: footers are full of <nav>s, but those links are low value.
-		let region: LinkRegion = 'other';
-		if (anchor.closest('footer, [role="contentinfo"]')) region = 'footer';
-		else if (anchor.closest('header, nav, [role="banner"], [role="navigation"]')) region = 'nav';
-		else if (anchor.closest('main, [role="main"]')) region = 'main';
-
 		found.push({
 			href: anchor.href,
 			text: accessibleName(anchor),
-			region,
+			region: regionOf(anchor),
 			rect: isVisible(anchor) ? pageRect(anchor) : undefined
 		});
 	}
@@ -213,13 +217,40 @@ function links(): PageLink[] {
 const SCROLL_STEP_PAUSE_MS = 150;
 /** Upper bound for waiting on images that started loading during the scroll. */
 const IMAGE_WAIT_MS = 2500;
+/** Upper bound for waiting on entrance animations and transitions started by the scroll. */
+const ANIMATION_WAIT_MS = 2000;
 
 function sleep(milliseconds: number): Promise<void> {
 	return new Promise((resolve) => setTimeout(resolve, milliseconds));
 }
 
+/**
+ * Makes the browser paint `content-visibility: auto` sections that are far from the viewport.
+ * Such a section is skipped until it is scrolled near, and a full-page screenshot is taken
+ * without scrolling, so everything below the first screens came out as an empty page (vercel.com
+ * did this). Stylesheets adopted through the DOM are not blocked by a page's content security policy.
+ */
+function paintOffscreenContent(): void {
+	const stylesheet = new CSSStyleSheet();
+	stylesheet.replaceSync('* { content-visibility: visible !important; }');
+	document.adoptedStyleSheets = [...document.adoptedStyleSheets, stylesheet];
+}
+
+/**
+ * Resolves when every finite animation and CSS transition has finished, which includes the
+ * fade-ins that scroll-triggered reveals play. Looping animations never finish and are skipped.
+ */
+async function waitForAnimations(): Promise<void> {
+	const finishing = document
+		.getAnimations()
+		.filter((animation) => animation.effect?.getComputedTiming().iterations !== Infinity)
+		.map((animation) => animation.finished.catch(() => undefined));
+	await Promise.race([Promise.all(finishing), sleep(ANIMATION_WAIT_MS)]);
+}
+
 /** Scrolls through the page to trigger lazy loading and scroll-linked reveals, then back to the top. */
 async function scrollThrough(stepHeight: number, maxSteps: number): Promise<void> {
+	paintOffscreenContent();
 	let top = 0;
 	for (let step = 0; step < maxSteps; step++) {
 		// Re-read the height each time: lazy content makes the page grow while we scroll.
@@ -245,6 +276,112 @@ async function scrollThrough(stepHeight: number, maxSteps: number): Promise<void
 
 	window.scrollTo({ top: 0, behavior: 'instant' });
 	await sleep(SCROLL_STEP_PAUSE_MS);
+	// Reveals triggered by the last scroll steps are still fading in.
+	await waitForAnimations();
+}
+
+// --- chat launchers --------------------------------------------------------------------------
+
+/**
+ * Launchers and frames of the common chat and support widgets. Most are served from hosts the
+ * crawler blocks, but the ones a site serves itself (Stripe) or that need no network get through.
+ */
+const CHAT_LAUNCHER_SELECTORS = [
+	'#intercom-container, .intercom-lightweight-app, iframe[name="intercom-launcher-frame"]',
+	'#drift-widget, #drift-widget-container, #drift-frame-controller',
+	'#crisp-chatbox, .crisp-client',
+	'#hubspot-messages-iframe-container',
+	'iframe#launcher, [data-product="web_widget"]',
+	'#tidio-chat, #tidio-chat-iframe',
+	'#fc_frame, #freshworks-container',
+	'#gorgias-chat-container',
+	'#front-chat-container',
+	'#beacon-container, .BeaconContainer',
+	'.woot-widget-holder, .woot--bubble-holder',
+	'#chat-widget-container, #chat-widget, #livechat-compact-container',
+	'#habla_window_div, #olark-box-container',
+	'#tawkchat-container, iframe[title*="chat widget" i]'
+].join(', ');
+
+/** What a launcher's label says: "Chat with us", "Help", "Contact support", "Jetzt chatten". */
+const CHAT_LABEL = /chat|help|support/i;
+/** A launcher bubble, with its label if it has one, is at most this big (CSS px). */
+const MAX_LAUNCHER_WIDTH = 300;
+const MAX_LAUNCHER_HEIGHT = 100;
+/** The bubble and the teaser card above it are hidden together while they stay this small. */
+const MAX_LAUNCHER_GROUP_WIDTH = 420;
+const MAX_LAUNCHER_GROUP_HEIGHT = 320;
+/** How far from the bottom and a side edge of the viewport a launcher sits: 16 to 40px in practice. */
+const LAUNCHER_CORNER_REACH = 150;
+
+/** Where a "Help" or "Support" label belongs to navigation, not to a chat launcher. */
+const NAVIGATION_ANCESTORS =
+	'nav, header, footer, [role="navigation"], [role="tablist"], [role="toolbar"], [role="menu"]';
+
+function isFixed(element: Element): boolean {
+	for (let node: Element | null = element; node; node = node.parentElement) {
+		if (getComputedStyle(node).position === 'fixed') return true;
+	}
+	return false;
+}
+
+function isInBottomCorner(box: DOMRect): boolean {
+	const reachesBottom = window.innerHeight - box.bottom <= LAUNCHER_CORNER_REACH;
+	const reachesSide =
+		box.left <= LAUNCHER_CORNER_REACH || window.innerWidth - box.right <= LAUNCHER_CORNER_REACH;
+	return reachesBottom && reachesSide;
+}
+
+/**
+ * Hides chat and support launchers, because they sit on top of the page in every screenshot and
+ * are not part of the design. First the known widgets, then a generic rule for the rest: a small
+ * control in a bottom corner of a fixed layer that is labelled chat, help or support. Hiding the
+ * bubble together with the teaser card around it keeps real content untouched, because only
+ * fixed, corner-sized things are ever considered. Returns how many launchers it hid.
+ */
+function hideChatLaunchers(): number {
+	const launchers = new Set<Element>(document.querySelectorAll(CHAT_LAUNCHER_SELECTORS));
+
+	for (const control of document.querySelectorAll(
+		'button, a, [role="button"], iframe, [aria-label], [title]'
+	)) {
+		const isFrame = control instanceof HTMLIFrameElement;
+		const label = [
+			control.getAttribute('aria-label'),
+			control.getAttribute('title'),
+			isFrame ? '' : cleanText((control as HTMLElement).innerText)
+		].join(' ');
+		if (!CHAT_LABEL.test(label)) continue;
+
+		// A frame is the whole widget and may be larger; anything else must be bubble sized.
+		const box = control.getBoundingClientRect();
+		if (box.width === 0 || box.height === 0 || !isInBottomCorner(box) || !isFixed(control))
+			continue;
+		if (!isFrame && (box.width > MAX_LAUNCHER_WIDTH || box.height > MAX_LAUNCHER_HEIGHT)) continue;
+		// A bottom tab bar or a fixed footer menu can have a "Help" entry; that is navigation.
+		if (control.closest(NAVIGATION_ANCESTORS)) continue;
+
+		// Grow to the teaser card around the bubble, while the parent is still launcher sized and
+		// holds no other links.
+		let group: Element = control;
+		while (group.parentElement && group.parentElement !== document.body) {
+			const parent = group.parentElement;
+			const parentBox = parent.getBoundingClientRect();
+			const isLauncherSized =
+				parentBox.width <= MAX_LAUNCHER_GROUP_WIDTH &&
+				parentBox.height <= MAX_LAUNCHER_GROUP_HEIGHT;
+			const holdsOtherLinks = [...parent.querySelectorAll('a[href]')].some(
+				(link) => !control.contains(link)
+			);
+			if (!isLauncherSized || holdsOtherLinks) break;
+			group = parent;
+		}
+		launchers.add(group);
+	}
+
+	for (const launcher of launchers)
+		(launcher as HTMLElement).style.setProperty('display', 'none', 'important');
+	return launchers.size;
 }
 
 // --- click targets and what a click revealed --------------------------------------------------
@@ -301,7 +438,8 @@ function clickTargets(): ClickTarget[] {
 				box.left >= 0 &&
 				box.left < window.innerWidth;
 			const name = accessibleName(element);
-			if (inFirstViewport && name) targets.push({ name, rank, rect: pageRect(element) });
+			if (inFirstViewport && name)
+				targets.push({ name, region: regionOf(element), rank, rect: pageRect(element) });
 		}
 	});
 	return targets;
@@ -616,6 +754,7 @@ const pageInspector = {
 	pageDetails,
 	links,
 	scrollThrough,
+	hideChatLaunchers,
 	clickTargets,
 	snapshotVisible,
 	newPanels,

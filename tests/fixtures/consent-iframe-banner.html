@@ -1,0 +1,24 @@
+<!doctype html>
+<title>Banner inside an iframe</title>
+<style>
+	body {
+		margin: 0;
+		font-family: sans-serif;
+	}
+	iframe {
+		position: fixed;
+		bottom: 16px;
+		right: 16px;
+		width: 360px;
+		height: 160px;
+		border: 0;
+	}
+</style>
+<main><h1>Welcome</h1></main>
+<!-- Consent managers like Sourcepoint render in a frame whose URL says so, and tell the page through postMessage. -->
+<iframe id="banner" src="consent-iframe-banner-frame.html"></iframe>
+<script>
+	addEventListener('message', (message) => {
+		if (message.data === 'accepted') document.getElementById('banner').remove();
+	});
+</script>

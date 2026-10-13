@@ -1,0 +1,26 @@
+<!doctype html>
+<title>Controls that open something, and one that must never be pressed</title>
+<style>
+	body {
+		margin: 0;
+		padding: 40px;
+		font-family: sans-serif;
+	}
+	button {
+		padding: 8px 16px;
+	}
+</style>
+<header>
+	<!-- Harmless menu triggers: the crawler may open these. -->
+	<button aria-haspopup="menu">Products</button>
+	<button aria-haspopup="menu">Resources</button>
+	<!-- Looks like a menu trigger like the others, but the name says what it does. -->
+	<button aria-haspopup="menu" onclick="window.deleted = true">Delete account</button>
+	<button aria-haspopup="dialog" onclick="window.deleted = true">Sign out</button>
+</header>
+<main>
+	<form onsubmit="return false;">
+		<input name="email" value="a@b.c" />
+		<button>Save changes</button>
+	</form>
+</main>

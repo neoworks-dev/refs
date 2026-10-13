@@ -1,0 +1,26 @@
+<!doctype html>
+<title>Content that only paints once scrolled near</title>
+<style>
+	body {
+		margin: 0;
+		font-family: sans-serif;
+	}
+	section {
+		height: 1200px;
+		background: #f6f6f6;
+	}
+	/* Skipped by the browser until it is near the viewport, as on vercel.com. */
+	section.deferred {
+		content-visibility: auto;
+		contain-intrinsic-size: auto 1200px;
+	}
+	h2 {
+		margin: 0;
+		padding: 40px;
+		background: #123;
+		color: white;
+	}
+</style>
+<section><h2>Above the fold</h2></section>
+<section class="deferred" id="far-away"><h2>Far below</h2></section>
+<section class="deferred" id="even-further"><h2>Even further</h2></section>

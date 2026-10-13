@@ -1,0 +1,21 @@
+<!doctype html>
+<title>Unnamed notice in an open shadow root</title>
+<style>
+	body {
+		margin: 0;
+		font-family: sans-serif;
+	}
+</style>
+<main><h1>Welcome</h1></main>
+<!-- Nothing about the host element, the banner or the button names cookies. Only the notice text does, and
+     it is the host that floats, so the check for a fixed ancestor has to look out of the shadow root. -->
+<div id="widget-host" style="position: fixed; left: 16px; bottom: 16px"></div>
+<script>
+	const root = document.getElementById('widget-host').attachShadow({ mode: 'open' });
+	root.innerHTML = `
+		<style>.notice { padding: 16px; background: white; box-shadow: 0 2px 12px #0004; }</style>
+		<div class="notice">
+			<p>We use cookies to measure how the site is used.</p>
+			<button onclick="this.closest('.notice').remove()">Accept</button>
+		</div>`;
+</script>
