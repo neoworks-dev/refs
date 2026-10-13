@@ -111,6 +111,7 @@ export interface Crawl {
 	status: CrawlStatus;
 	max_screens: number;
 	max_depth: number;
+	max_trajectories: number;
 	screens: number;
 	elements: number;
 	activity?: string;
@@ -172,6 +173,24 @@ export interface FlowStep {
 	/** The action that led here; missing on the first step. */
 	action?: string;
 	caption?: string;
+	/** Goal flows only: why the model took this step. */
+	thought?: string;
+}
+
+export type FlowOutcome = 'done' | 'gave_up' | 'blocked' | 'stuck' | 'step_limit' | 'error';
+
+export interface FlowVideo {
+	/** Media key of the recording. */
+	media: string;
+	width: number;
+	height: number;
+	/** Length in seconds. */
+	duration: number;
+	/** Second at which each step was reached, in step order; shorter than the flow if it failed. */
+	steps: number[];
+	/** Why the replay stopped early. */
+	failed?: string;
+	recorded_at: string;
 }
 
 export interface Flow {
@@ -183,6 +202,11 @@ export interface Flow {
 	title: string;
 	category?: string;
 	steps: FlowStep[];
+	/** Goal flows only: the goal the model set itself, and how the attempt ended. */
+	goal?: string;
+	outcome?: FlowOutcome;
+	outcome_reason?: string;
+	video?: FlowVideo;
 	created_at: string;
 }
 

@@ -30,6 +30,9 @@ DEFINE FIELD OVERWRITE status ON crawl TYPE string DEFAULT 'queued'
 	ASSERT $value IN ['queued', 'running', 'done', 'failed', 'cancelled'];
 DEFINE FIELD OVERWRITE max_screens ON crawl TYPE int DEFAULT 30;
 DEFINE FIELD OVERWRITE max_depth ON crawl TYPE int DEFAULT 3;
+-- The model tries every goal a visitor could plausibly have on the site; this only bounds how long
+-- one crawl can run (a goal takes about half a minute). 0 skips exploration.
+DEFINE FIELD OVERWRITE max_trajectories ON crawl TYPE int DEFAULT 100;
 -- Counters updated while running, for progress display.
 DEFINE FIELD OVERWRITE screens ON crawl TYPE int DEFAULT 0;
 DEFINE FIELD OVERWRITE elements ON crawl TYPE int DEFAULT 0;
@@ -145,6 +148,26 @@ DEFINE FIELD OVERWRITE steps ON flow TYPE array<object> DEFAULT [];
 DEFINE FIELD OVERWRITE steps[*].screen ON flow TYPE record<screen>;
 DEFINE FIELD OVERWRITE steps[*].action ON flow TYPE option<record<action>>;
 DEFINE FIELD OVERWRITE steps[*].caption ON flow TYPE option<string>;
+-- Goal flows only: why the model chose this step, in its own words.
+DEFINE FIELD OVERWRITE steps[*].thought ON flow TYPE option<string>;
+-- Goal flows only: the goal the model set itself after surveying the site, how the attempt ended,
+-- and its reason. 'done' reached the goal, 'gave_up' found it unreachable without logging in or
+-- paying, 'blocked' stopped at a form asking for personal data, 'stuck' kept repeating itself,
+-- 'step_limit' ran out of steps, 'error' failed in the browser.
+DEFINE FIELD OVERWRITE goal ON flow TYPE option<string>;
+DEFINE FIELD OVERWRITE outcome ON flow TYPE option<'done' | 'gave_up' | 'blocked' | 'stuck' | 'step_limit' | 'error'>;
+DEFINE FIELD OVERWRITE outcome_reason ON flow TYPE option<string>;
+-- A recording of the flow being replayed in a browser (crawler/videos.ts). `steps` holds the second
+-- of the video at which each step was reached, in step order. A replay that couldn't carry out a
+-- step stops there: `steps` is shorter than the flow and `failed` says why.
+DEFINE FIELD OVERWRITE video ON flow TYPE option<object>;
+DEFINE FIELD OVERWRITE video.media ON flow TYPE string;
+DEFINE FIELD OVERWRITE video.width ON flow TYPE int;
+DEFINE FIELD OVERWRITE video.height ON flow TYPE int;
+DEFINE FIELD OVERWRITE video.duration ON flow TYPE number;
+DEFINE FIELD OVERWRITE video.steps ON flow TYPE array<number>;
+DEFINE FIELD OVERWRITE video.failed ON flow TYPE option<string>;
+DEFINE FIELD OVERWRITE video.recorded_at ON flow TYPE datetime;
 DEFINE FIELD OVERWRITE created_at ON flow TYPE datetime DEFAULT time::now() READONLY;
 DEFINE INDEX IF NOT EXISTS flow_crawl ON flow FIELDS crawl;
 DEFINE INDEX IF NOT EXISTS flow_site ON flow FIELDS site, viewport;

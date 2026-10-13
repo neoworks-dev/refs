@@ -49,6 +49,38 @@
 		}
 		return groups;
 	});
+	// --- flow video ------------------------------------------------------------------------
+	// The step the video is at is the last one reached by the current time. The flow is part of the
+	// state so that switching flows does not carry the old position over.
+	let videoElement = $state<HTMLVideoElement>();
+	let stepList = $state<HTMLOListElement>();
+	let playback = $state({ flowId: '', time: 0 });
+	/** Seeking lands this far past a step's second, so the frame is of that step and not the one before. */
+	const SEEK_OFFSET = 0.05;
+
+	function activeStepOf(flow: Flow) {
+		if (playback.flowId !== flow.id || flow.video === undefined) return 0;
+		const reached = flow.video.steps.filter((second) => second <= playback.time + SEEK_OFFSET);
+		return Math.max(reached.length - 1, 0);
+	}
+
+	function seekToStep(flow: Flow, index: number) {
+		const second = flow.video?.steps[index];
+		if (videoElement === undefined || second === undefined) return false;
+		videoElement.currentTime = second + SEEK_OFFSET;
+		void videoElement.play();
+		videoElement.scrollIntoView({ block: 'nearest' });
+		return true;
+	}
+
+	// While the video plays, the step row follows it. Only the row is scrolled, never the page.
+	$effect(() => {
+		const active = data.flow ? activeStepOf(data.flow) : 0;
+		const card = stepList?.children[active] as HTMLElement | undefined;
+		if (card === undefined || stepList === undefined || playback.time === 0) return;
+		stepList.scrollTo({ left: card.offsetLeft - stepList.offsetLeft, behavior: 'smooth' });
+	});
+
 	const lastCrawled = $derived(
 		data.crawls.find((crawl) => crawl.status === 'done' && crawl.finished_at)?.finished_at
 	);
@@ -392,8 +424,36 @@
 				<SaveButton table="flow" id={flow.id} label={flow.title || 'flow'} variant="pill" />
 			</div>
 
+			{#if flow.video}
+				<!-- A recording of someone going through the flow. The steps below jump to their moment. -->
+				{#key flow.id}
+					<!-- svelte-ignore a11y_media_has_caption (a screen recording has no audio to caption) -->
+					<video
+						bind:this={videoElement}
+						src="/media/{flow.video.media}"
+						controls
+						playsinline
+						preload="metadata"
+						ontimeupdate={(event) =>
+							(playback = { flowId: flow.id, time: event.currentTarget.currentTime })}
+						class={[
+							'mt-6 block scroll-mt-24 rounded-2xl bg-neutral-100 ring-1 ring-black/[0.08] dark:bg-white/5 dark:ring-white/15',
+							flow.viewport === 'desktop' && 'w-full max-w-4xl',
+							flow.viewport === 'mobile' && 'w-[min(70vw,300px)]'
+						]}
+						style:aspect-ratio="{flow.video.width} / {flow.video.height}"
+					></video>
+				{/key}
+				{#if flow.video.failed}
+					<p class="mt-3 text-[14px] text-neutral-400 dark:text-neutral-500">
+						The replay stopped early: {flow.video.failed}.
+					</p>
+				{/if}
+			{/if}
+
 			<!-- The row scrolls sideways and snaps to a screen. On a phone it bleeds to the page edge. -->
 			<ol
+				bind:this={stepList}
 				class="-mx-6 mt-6 flex snap-x snap-mandatory scroll-px-6 gap-5 overflow-x-auto px-6 pb-6 sm:mx-0 sm:scroll-px-0 sm:px-0"
 				data-sveltekit-reset="false"
 			>
@@ -405,13 +465,21 @@
 							step.screen.viewport === 'mobile' && 'w-[min(56vw,230px)]'
 						]}
 					>
+						<!-- With a video, a step seeks to its moment; the screen itself opens from the link below it. -->
 						<a
 							href={link({ screen: step.screen.id, flow: flow.id, el: undefined })}
+							onclick={(event) => {
+								if (seekToStep(flow, index)) event.preventDefault();
+							}}
+							aria-current={flow.video && index === activeStepOf(flow) ? 'step' : undefined}
 							class="group flex flex-col gap-3 rounded-[28px] focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-black dark:focus-visible:outline-white"
 						>
 							<div
 								class={[
 									'overflow-hidden bg-white ring-1 ring-black/[0.08] transition-shadow group-hover:ring-black/30 dark:ring-white/15 dark:group-hover:ring-white/40',
+									flow.video &&
+										index === activeStepOf(flow) &&
+										'ring-2 ring-black group-hover:ring-black dark:ring-white dark:group-hover:ring-white',
 									step.screen.viewport === 'desktop' && 'rounded-2xl',
 									step.screen.viewport === 'mobile' && 'rounded-[26px]'
 								]}
@@ -444,6 +512,14 @@
 								</p>
 							</div>
 						</a>
+						{#if flow.video && flow.video.steps[index] !== undefined}
+							<a
+								href={link({ screen: step.screen.id, flow: flow.id, el: undefined })}
+								class="mt-1 inline-block px-0.5 text-[13px] text-neutral-400 underline-offset-4 hover:underline dark:text-neutral-500"
+							>
+								Open screen
+							</a>
+						{/if}
 					</li>
 				{/each}
 			</ol>

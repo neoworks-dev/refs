@@ -35,6 +35,25 @@ export interface ClickTarget {
 	rect: Rect;
 }
 
+/** The control under a point, as far as the safety checks of goal-directed exploration need it. */
+export interface ProbedControl {
+	/** Accessible name of the closest interactive ancestor, empty when it has none. */
+	name: string;
+	region: LinkRegion;
+	rect: Rect;
+	/** Set when the control is, or sits inside, a link. */
+	href?: string;
+}
+
+/** A text field that has the focus, described by everything that says what it is for. */
+export interface FocusedField {
+	/** The input type, `textarea` for a textarea, `contenteditable` for rich text. */
+	type: string;
+	autocomplete: string;
+	/** Name, id, placeholder, label and aria-label joined, for matching against words. */
+	text: string;
+}
+
 export interface FoundElement {
 	kind: ElementKind;
 	name: string;
@@ -747,6 +766,51 @@ function findElements(): { pageHeight: number; elements: FoundElement[] } {
 	};
 }
 
+// --- probing a control ------------------------------------------------------------------------
+
+const INTERACTIVE_SELECTOR =
+	'a[href], button, summary, label, input, select, textarea, [role="button"], [role="link"], [role="tab"], [role="menuitem"], [role="option"], [onclick]';
+
+/** What the click at a viewport point would hit, found without clicking. */
+function probeAt(x: number, y: number): ProbedControl | undefined {
+	const hit = document.elementFromPoint(x, y);
+	if (!hit) return undefined;
+	const control = hit.closest(INTERACTIVE_SELECTOR) ?? hit;
+	const anchor = control.closest('a[href]');
+	return {
+		name: accessibleName(control) || accessibleName(hit),
+		region: regionOf(control),
+		rect: pageRect(control),
+		href: anchor instanceof HTMLAnchorElement ? anchor.href : undefined
+	};
+}
+
+/** The focused text field, or undefined when focus is on something that cannot take typing. */
+function focusedField(): FocusedField | undefined {
+	const element = document.activeElement;
+	if (!element) return undefined;
+	let type: string;
+	if (element instanceof HTMLInputElement) type = element.type;
+	else if (element instanceof HTMLTextAreaElement) type = 'textarea';
+	else if (element instanceof HTMLElement && element.isContentEditable) type = 'contenteditable';
+	else return undefined;
+
+	const labels =
+		element instanceof HTMLInputElement || element instanceof HTMLTextAreaElement
+			? [...(element.labels ?? [])]
+			: [];
+	const text = [
+		element.getAttribute('name'),
+		element.id,
+		element.getAttribute('placeholder'),
+		element.getAttribute('aria-label'),
+		...labels.map((label) => label.textContent)
+	]
+		.map((part) => cleanText(part))
+		.join(' ');
+	return { type, autocomplete: element.getAttribute('autocomplete') ?? '', text };
+}
+
 // --- entry point -----------------------------------------------------------------------------
 
 const pageInspector = {
@@ -758,7 +822,9 @@ const pageInspector = {
 	clickTargets,
 	snapshotVisible,
 	newPanels,
-	findElements
+	findElements,
+	probeAt,
+	focusedField
 };
 
 export type PageInspector = typeof pageInspector;

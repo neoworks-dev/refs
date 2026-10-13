@@ -43,6 +43,7 @@ import {
 import { applySiteMetadata, setCover } from './site-metadata.ts';
 import { enrichCrawl } from './enrich.ts';
 import { cutFlows } from './flows.ts';
+import { recordFlowVideosInNewProcess } from './videos.ts';
 
 /** Where screenshots and crops are written; the SvelteKit app serves the same directory. */
 export const MEDIA_ROOT = process.env.MEDIA_DIR ?? 'data/media';
@@ -180,8 +181,11 @@ export async function executeCrawl(
 async function processFinishedCrawl(db: Surreal, job: CrawlJob): Promise<void> {
 	try {
 		await cutFlows(db, String(job.id.id));
+		await recordFlowVideosInNewProcess(String(job.id.id));
 	} catch (error) {
-		console.warn(`cutting flows failed: ${error instanceof Error ? error.message : error}`);
+		console.warn(
+			`cutting or recording flows failed: ${error instanceof Error ? error.message : error}`
+		);
 	}
 	try {
 		await enrichCrawl(db, job.id);
