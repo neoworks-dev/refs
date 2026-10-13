@@ -4,6 +4,7 @@ import * as env from '$app/env/private';
 import type {
 	Crawl,
 	ElementKind,
+	Flow,
 	Rect,
 	Screen,
 	SectionLabel,
@@ -11,7 +12,7 @@ import type {
 	UiElement,
 	Viewport
 } from '../types.ts';
-import { VIEWPORTS } from '../types.ts';
+import { FLOW_CATEGORIES, VIEWPORTS } from '../types.ts';
 import { db } from './db.ts';
 import {
 	elementConditions,
@@ -406,6 +407,7 @@ export interface SiteOverview {
 	 */
 	sources: Partial<Record<Viewport, string>>;
 	screenCounts: Record<Viewport, number>;
+	flowCounts: Record<Viewport, number>;
 	kindCounts: Record<Viewport, Partial<Record<ElementKind, number>>>;
 }
 
@@ -414,7 +416,7 @@ export async function getSiteOverview(slug: string): Promise<SiteOverview | unde
 	if (!site) return undefined;
 	const siteRecord = new RecordId('site', site.id);
 
-	const [crawls, screenGroups, currentCrawls] = await Promise.all([
+	const [crawls, screenGroups, flowGroups, currentCrawls] = await Promise.all([
 		rows<Crawl>('SELECT * FROM crawl WHERE site = $site ORDER BY created_at DESC LIMIT 20', {
 			site: siteRecord
 		}),
@@ -424,15 +426,22 @@ export async function getSiteOverview(slug: string): Promise<SiteOverview | unde
 			'SELECT crawl, count() AS count FROM screen WHERE site = $site GROUP BY crawl',
 			{ site: siteRecord }
 		),
+		rows<{ crawl: string; count: number }>(
+			'SELECT crawl, count() AS count FROM flow WHERE site = $site GROUP BY crawl',
+			{ site: siteRecord }
+		),
 		db().then((database) => sourceCrawls(database, site.id))
 	]);
 
 	const screensByCrawl = new Map(screenGroups.map((group) => [group.crawl, group.count]));
+	const flowsByCrawl = new Map(flowGroups.map((group) => [group.crawl, group.count]));
 	const sources: SiteOverview['sources'] = {};
 	const screenCounts: SiteOverview['screenCounts'] = { desktop: 0, mobile: 0 };
+	const flowCounts: SiteOverview['flowCounts'] = { desktop: 0, mobile: 0 };
 	for (const crawl of currentCrawls) {
 		sources[crawl.viewport] = crawl.id;
 		screenCounts[crawl.viewport] = screensByCrawl.get(crawl.id) ?? 0;
+		flowCounts[crawl.viewport] = flowsByCrawl.get(crawl.id) ?? 0;
 	}
 
 	const kindCounts: SiteOverview['kindCounts'] = { desktop: {}, mobile: {} };
@@ -449,7 +458,7 @@ export async function getSiteOverview(slug: string): Promise<SiteOverview | unde
 		})
 	);
 
-	return { site, crawls, sources, screenCounts, kindCounts };
+	return { site, crawls, sources, screenCounts, flowCounts, kindCounts };
 }
 
 export interface ScreenList {
@@ -554,6 +563,75 @@ export async function listElements(
 		criteria.kind === 'section' ? countSectionLabels(crawls) : {}
 	]);
 	return { elements, labelCounts };
+}
+
+// ---------------------------------------------------------------------------------------------
+// Flows
+// ---------------------------------------------------------------------------------------------
+
+/**
+ * The flows of one crawl in the order the flow tree shows them: grouped by category in the
+ * model's vocabulary order, then in the order they were cut. A category the vocabulary doesn't
+ * know sorts after the known ones, and flows without a category come last.
+ */
+export async function listFlows(crawlId: string): Promise<Flow[]> {
+	const flows = await rows<Flow>(
+		'SELECT * FROM flow WHERE crawl = $crawl ORDER BY created_at, id',
+		{
+			crawl: new RecordId('crawl', crawlId)
+		}
+	);
+	const rank = (flow: Flow) => {
+		if (flow.category === undefined) return FLOW_CATEGORIES.length + 1;
+		const index = (FLOW_CATEGORIES as readonly string[]).indexOf(flow.category);
+		return index === -1 ? FLOW_CATEGORIES.length : index;
+	};
+	// Array.sort is stable, so flows of one category keep their creation order.
+	return flows.sort((first, second) => rank(first) - rank(second));
+}
+
+export interface FlowStepDetail {
+	screen: Pick<Screen, 'id' | 'viewport' | 'path' | 'title' | 'kind' | 'width' | 'height'> & {
+		thumb: string;
+	};
+	caption?: string;
+	/** What was clicked or followed to get here; missing on the first step and on unlabelled links. */
+	actionLabel?: string;
+	actionKind?: 'navigate' | 'click';
+}
+
+/** A flow's steps with the screen and action each one points at, in flow order. */
+export async function getFlowSteps(flow: Flow): Promise<FlowStepDetail[]> {
+	const [screens, actions] = await Promise.all([
+		rows<FlowStepDetail['screen']>(
+			'SELECT id, viewport, path, title, kind, width, height, media.thumb AS thumb FROM screen WHERE id IN $ids',
+			{ ids: flow.steps.map((step) => new RecordId('screen', step.screen)) }
+		),
+		rows<{ id: string; label: string; kind: 'navigate' | 'click' }>(
+			'SELECT id, label, kind FROM action WHERE id IN $ids',
+			{
+				ids: flow.steps.flatMap((step) =>
+					step.action === undefined ? [] : [new RecordId('action', step.action)]
+				)
+			}
+		)
+	]);
+	const screenById = new Map(screens.map((screen) => [screen.id, screen]));
+	const actionById = new Map(actions.map((action) => [action.id, action]));
+	// A screen deleted after the flow was cut leaves a dangling step; the row simply skips it.
+	return flow.steps.flatMap((step) => {
+		const screen = screenById.get(step.screen);
+		if (screen === undefined) return [];
+		const action = step.action === undefined ? undefined : actionById.get(step.action);
+		return [
+			{
+				screen,
+				caption: step.caption,
+				actionLabel: action?.label || undefined,
+				actionKind: action?.kind
+			}
+		];
+	});
 }
 
 // ---------------------------------------------------------------------------------------------

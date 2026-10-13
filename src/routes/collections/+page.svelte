@@ -15,7 +15,7 @@
 		Collections
 	</h1>
 	<p class="mt-3 max-w-xl text-[17px] text-neutral-500 dark:text-neutral-400">
-		Screens and elements kept together, like the pricing pages for one project.
+		Screens, elements and flows kept together, like the pricing pages for one project.
 	</p>
 </div>
 

@@ -8,10 +8,17 @@
 	import ElementTile from '#lib/components/ElementTile.svelte';
 	import ScreenCard from '#lib/components/ScreenCard.svelte';
 	import ScreenViewer from '#lib/components/ScreenViewer.svelte';
+	import SaveButton from '#lib/components/SaveButton.svelte';
 	import SegmentedToggle from '#lib/components/SegmentedToggle.svelte';
 	import SiteIcon from '#lib/components/SiteIcon.svelte';
 	import { humanise, kindLabels, kinds } from '#lib/labels.ts';
-	import { PAGE_TYPES, SECTION_LABELS, type ElementKind, type Viewport } from '#lib/types.ts';
+	import {
+		PAGE_TYPES,
+		SECTION_LABELS,
+		type ElementKind,
+		type Flow,
+		type Viewport
+	} from '#lib/types.ts';
 	import type { PageProps } from './$types';
 
 	let { data }: PageProps = $props();
@@ -22,6 +29,7 @@
 		data.crawls.filter((crawl) => crawl.status === 'queued' || crawl.status === 'running')
 	);
 	const totalScreens = $derived(data.screenCounts.desktop + data.screenCounts.mobile);
+	const totalFlows = $derived(data.flowCounts.desktop + data.flowCounts.mobile);
 	const totalElements = $derived(
 		viewports
 			.flatMap((viewport) => Object.values(data.kindCounts[viewport]))
@@ -31,6 +39,16 @@
 	const filtered = $derived(
 		data.tab === 'screens' ? data.pageType !== undefined : data.kind !== undefined
 	);
+	// The tree groups the flows by category. They arrive sorted by category, so a group is a run.
+	const flowGroups = $derived.by(() => {
+		const groups: { category?: string; flows: Flow[] }[] = [];
+		for (const flow of data.flows) {
+			const lastGroup = groups.at(-1);
+			if (lastGroup && lastGroup.category === flow.category) lastGroup.flows.push(flow);
+			else groups.push({ category: flow.category, flows: [flow] });
+		}
+		return groups;
+	});
 	const lastCrawled = $derived(
 		data.crawls.find((crawl) => crawl.status === 'done' && crawl.finished_at)?.finished_at
 	);
@@ -114,6 +132,10 @@
 			<dd class="font-medium">{totalElements}</dd>
 		</div>
 		<div>
+			<dt class="text-[15px] text-neutral-500 dark:text-neutral-400">Flows</dt>
+			<dd class="font-medium">{totalFlows}</dd>
+		</div>
+		<div>
 			<dt class="text-[15px] text-neutral-500 dark:text-neutral-400">Last crawled</dt>
 			<dd class="font-medium">
 				{lastCrawled
@@ -166,16 +188,16 @@
 		label="Viewport"
 		active={data.viewport}
 		options={[
-			// Switching viewport drops the screen and the kind filter: both belong to the old one.
+			// Switching viewport drops the screen, the kind filter and the flow: all belong to the old one.
 			{
 				value: 'desktop',
 				label: 'Desktop',
-				href: link({ viewport: 'desktop', screen: undefined, el: undefined })
+				href: link({ viewport: 'desktop', screen: undefined, el: undefined, flow: undefined })
 			},
 			{
 				value: 'mobile',
 				label: 'Mobile',
-				href: link({ viewport: 'mobile', screen: undefined, el: undefined })
+				href: link({ viewport: 'mobile', screen: undefined, el: undefined, flow: undefined })
 			}
 		]}
 	/>
@@ -186,7 +208,7 @@
 		data-sveltekit-reset="false"
 	>
 		<!-- The active tab's underline sits on the row's bottom border. -->
-		{#each [{ value: 'screens', label: 'Screens', href: link( { tab: undefined, kind: undefined, label: undefined } ) }, { value: 'elements', label: 'Elements', href: link( { tab: 'elements', type: undefined } ) }] as tab (tab.value)}
+		{#each [{ value: 'screens', label: 'Screens', href: link( { tab: undefined, kind: undefined, label: undefined, flow: undefined } ) }, { value: 'elements', label: 'Elements', href: link( { tab: 'elements', type: undefined, flow: undefined } ) }, { value: 'flows', label: 'Flows', href: link( { tab: 'flows', type: undefined, kind: undefined, label: undefined, flow: undefined } ) }] as tab (tab.value)}
 			<a
 				href={tab.href}
 				aria-current={data.tab === tab.value ? 'page' : undefined}
@@ -201,13 +223,6 @@
 				{tab.label}
 			</a>
 		{/each}
-		<span
-			class="flex h-full cursor-not-allowed items-center text-[17px] font-medium tracking-tight text-neutral-300 dark:text-neutral-600"
-			title="Coming soon"
-			aria-disabled="true"
-		>
-			Flows
-		</span>
 	</nav>
 </div>
 
@@ -240,6 +255,12 @@
 			</ul>
 		{:else}
 			{@render empty('screens')}
+		{/if}
+	{:else if data.tab === 'flows'}
+		{#if data.flow}
+			{@render flowsTab(data.flow)}
+		{:else}
+			{@render empty('flows')}
 		{/if}
 	{:else}
 		<div class="mb-8 flex flex-col gap-3">
@@ -285,6 +306,7 @@
 		detail={data.viewer}
 		site={data.site}
 		initialElementId={page.url.searchParams.get('el') ?? undefined}
+		flowTitle={data.viewerFlowTitle}
 		screenHref={(screenId) => link({ screen: screenId, el: undefined })}
 		onclose={closeViewer}
 		onnavigate={(screenId) =>
@@ -292,7 +314,144 @@
 	/>
 {/if}
 
-{#snippet empty(what: 'screens' | 'elements')}
+{#snippet flowsTab(flow: Flow)}
+	<!-- From 1024px the tree is a sticky sidebar beside the steps, like Mobbin's. Below that a
+	native select replaces it: a tree of ten flows would push the steps off the screen. -->
+	<div class="lg:grid lg:grid-cols-[17rem_minmax(0,1fr)] lg:gap-10">
+		<nav
+			class="hidden lg:sticky lg:top-24 lg:block lg:max-h-[calc(100dvh-8rem)] lg:self-start lg:overflow-y-auto"
+			aria-label="Flow tree"
+			data-sveltekit-reset="false"
+		>
+			<h2 class="px-3 pb-3 text-[15px] text-neutral-400 dark:text-neutral-500">Flow tree</h2>
+			{#each flowGroups as group (group.category ?? '')}
+				<section class="mb-3">
+					<h3 class="flex items-baseline justify-between gap-3 px-3 py-2 text-[16px] font-medium">
+						{group.category ? humanise(group.category) : 'Uncategorised'}
+						<span class="text-[15px] font-normal text-neutral-400 dark:text-neutral-500">
+							{group.flows.length}
+						</span>
+					</h3>
+					<ul class="ml-4 border-l border-neutral-200 pl-2 dark:border-white/10">
+						{#each group.flows as candidate (candidate.id)}
+							<li>
+								<a
+									href={link({ flow: candidate.id, screen: undefined, el: undefined })}
+									aria-current={candidate.id === flow.id ? 'true' : undefined}
+									class={[
+										'flex items-baseline justify-between gap-3 rounded-xl px-3 py-2 text-[15px] leading-snug transition-colors',
+										candidate.id === flow.id &&
+											'bg-neutral-100 font-medium text-black dark:bg-white/10 dark:text-white',
+										candidate.id !== flow.id &&
+											'text-neutral-600 hover:bg-neutral-50 hover:text-black dark:text-neutral-300 dark:hover:bg-white/5 dark:hover:text-white'
+									]}
+								>
+									<span class="min-w-0">{candidate.title || 'Untitled flow'}</span>
+									<span class="shrink-0 text-neutral-400 dark:text-neutral-500">
+										{candidate.steps.length}
+									</span>
+								</a>
+							</li>
+						{/each}
+					</ul>
+				</section>
+			{/each}
+		</nav>
+
+		<div class="min-w-0">
+			<select
+				aria-label="Flow"
+				value={flow.id}
+				onchange={(event) =>
+					goto(link({ flow: event.currentTarget.value, screen: undefined, el: undefined }), {
+						reset: false
+					})}
+				class="mb-6 h-12 w-full rounded-full border border-neutral-200 bg-white px-5 text-[16px] font-medium lg:hidden dark:border-white/15 dark:bg-night"
+			>
+				{#each flowGroups as group (group.category ?? '')}
+					<optgroup label={group.category ? humanise(group.category) : 'Uncategorised'}>
+						{#each group.flows as candidate (candidate.id)}
+							<option value={candidate.id}>
+								{candidate.title || 'Untitled flow'} ({candidate.steps.length})
+							</option>
+						{/each}
+					</optgroup>
+				{/each}
+			</select>
+
+			<div class="flex items-start justify-between gap-4">
+				<div class="min-w-0">
+					<h2 class="text-[28px] leading-tight font-semibold tracking-[-0.035em]">
+						{flow.title || 'Untitled flow'}
+					</h2>
+					<p class="mt-1 text-[16px] text-neutral-500 dark:text-neutral-400">
+						{flow.category ? `${humanise(flow.category)} · ` : ''}{data.flowSteps.length}
+						{data.flowSteps.length === 1 ? 'screen' : 'screens'}
+					</p>
+				</div>
+				<SaveButton table="flow" id={flow.id} label={flow.title || 'flow'} variant="pill" />
+			</div>
+
+			<!-- The row scrolls sideways and snaps to a screen. On a phone it bleeds to the page edge. -->
+			<ol
+				class="-mx-6 mt-6 flex snap-x snap-mandatory scroll-px-6 gap-5 overflow-x-auto px-6 pb-6 sm:mx-0 sm:scroll-px-0 sm:px-0"
+				data-sveltekit-reset="false"
+			>
+				{#each data.flowSteps as step, index (index)}
+					<li
+						class={[
+							'shrink-0 snap-start',
+							step.screen.viewport === 'desktop' && 'w-[min(80vw,380px)]',
+							step.screen.viewport === 'mobile' && 'w-[min(56vw,230px)]'
+						]}
+					>
+						<a
+							href={link({ screen: step.screen.id, flow: flow.id, el: undefined })}
+							class="group flex flex-col gap-3 rounded-[28px] focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-black dark:focus-visible:outline-white"
+						>
+							<div
+								class={[
+									'overflow-hidden bg-white ring-1 ring-black/[0.08] transition-shadow group-hover:ring-black/30 dark:ring-white/15 dark:group-hover:ring-white/40',
+									step.screen.viewport === 'desktop' && 'rounded-2xl',
+									step.screen.viewport === 'mobile' && 'rounded-[26px]'
+								]}
+								style:aspect-ratio="{step.screen.width} / {step.screen.height}"
+							>
+								<img
+									src="/media/{step.screen.thumb}"
+									width={step.screen.width}
+									height={step.screen.height}
+									alt={step.screen.title || step.screen.path}
+									loading="lazy"
+									class="size-full object-cover object-top"
+								/>
+							</div>
+							<div class="min-w-0 px-0.5 leading-snug">
+								<div class="truncate text-[13px] text-neutral-400 dark:text-neutral-500">
+									{index + 1} · {step.screen.path}
+								</div>
+								<!-- Without a caption from the model the step says how it was reached. -->
+								<p class="mt-0.5 line-clamp-4 text-[15px]">
+									{#if step.caption}
+										{step.caption}
+									{:else if step.actionLabel}
+										{step.actionKind === 'click' ? 'Clicked' : 'Followed'} “{step.actionLabel}”
+									{:else if index === 0}
+										Start of the flow
+									{:else}
+										{step.screen.title || step.screen.path}
+									{/if}
+								</p>
+							</div>
+						</a>
+					</li>
+				{/each}
+			</ol>
+		</div>
+	</div>
+{/snippet}
+
+{#snippet empty(what: 'screens' | 'elements' | 'flows')}
 	<div
 		class="flex flex-col items-center rounded-[28px] bg-neutral-50 px-6 py-24 text-center dark:bg-white/5"
 	>
@@ -301,7 +460,13 @@
 			{activeCrawls.length > 0 ? `Capturing ${what}…` : `No ${what} yet`}
 		</h2>
 		<p class="mt-2 max-w-sm text-[17px] text-balance text-neutral-500 dark:text-neutral-400">
-			{#if filtered}
+			{#if what === 'flows'}
+				{#if activeCrawls.length > 0}
+					They show up here once the crawl has finished.
+				{:else}
+					No flows were found on the {data.viewport} viewport.
+				{/if}
+			{:else if filtered}
 				No {what} of this kind on the {data.viewport} viewport. Pick another chip, or All.
 			{:else if activeCrawls.length > 0}
 				They show up here as the crawler finds them.

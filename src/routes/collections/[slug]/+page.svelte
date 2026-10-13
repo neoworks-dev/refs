@@ -5,7 +5,9 @@
 	import ElementTile from '#lib/components/ElementTile.svelte';
 	import FilterChips from '#lib/components/FilterChips.svelte';
 	import Modal from '#lib/components/Modal.svelte';
+	import SaveButton from '#lib/components/SaveButton.svelte';
 	import ScreenCard from '#lib/components/ScreenCard.svelte';
+	import { humanise } from '#lib/labels.ts';
 	import type { PageProps } from './$types';
 
 	let { data }: PageProps = $props();
@@ -13,11 +15,12 @@
 	let editing = $state(false);
 	let deleting = $state(false);
 
-	const showScreens = $derived(data.show !== 'elements');
-	const showElements = $derived(data.show !== 'screens');
+	const showScreens = $derived(data.show === undefined || data.show === 'screens');
+	const showElements = $derived(data.show === undefined || data.show === 'elements');
+	const showFlows = $derived(data.show === undefined || data.show === 'flows');
 	const desktopScreens = $derived(data.screens.filter((screen) => screen.viewport === 'desktop'));
 	const mobileScreens = $derived(data.screens.filter((screen) => screen.viewport === 'mobile'));
-	const isEmpty = $derived(data.screens.length + data.elements.length === 0);
+	const isEmpty = $derived(data.screens.length + data.elements.length + data.flows.length === 0);
 </script>
 
 <svelte:head><title>{data.collection.name} · Collections · Refs</title></svelte:head>
@@ -44,9 +47,13 @@
 		{#if !isEmpty}
 			<FilterChips
 				ariaLabel="Show"
-				values={['screens', 'elements']}
-				counts={{ screens: data.screens.length, elements: data.elements.length }}
-				label={(value) => (value === 'screens' ? 'Screens' : 'Elements')}
+				values={['screens', 'elements', 'flows']}
+				counts={{
+					screens: data.screens.length,
+					elements: data.elements.length,
+					flows: data.flows.length
+				}}
+				label={(value) => humanise(value)}
 				active={data.show}
 				href={(value) => (value ? `?show=${value}` : '?')}
 			/>
@@ -78,7 +85,7 @@
 	>
 		<h2 class="text-2xl font-semibold tracking-[-0.035em]">Nothing saved yet</h2>
 		<p class="mt-2 max-w-sm text-[17px] text-balance text-neutral-500 dark:text-neutral-400">
-			Use the bookmark on a screen or an element to put it in this collection.
+			Use the bookmark on a screen, an element or a flow to put it in this collection.
 		</p>
 	</div>
 {/if}
@@ -109,6 +116,50 @@
 	</section>
 {/if}
 
+{#if showFlows && data.flows.length > 0}
+	<section class="mt-10" data-sveltekit-reset="false">
+		<h2 class="mb-4 text-[20px] font-semibold tracking-[-0.03em]">Flows</h2>
+		<ul class="grid grid-cols-1 gap-x-5 gap-y-9 sm:grid-cols-2 lg:grid-cols-3">
+			{#each data.flows as flow (flow.id)}
+				<li class="group/card relative">
+					<a
+						href="/sites/{flow.site}?tab=flows&viewport={flow.viewport}&flow={flow.id}"
+						class="group flex flex-col gap-3 rounded-[28px] focus-visible:outline-2 focus-visible:outline-offset-4"
+					>
+						<!-- The first screens side by side, cut off at the card's edge like a row of steps. -->
+						<div
+							class="flex aspect-[1.4] gap-3 overflow-hidden rounded-3xl bg-neutral-100 p-4 transition-colors group-hover:bg-neutral-200/70 dark:bg-white/[0.07] dark:group-hover:bg-white/[0.11]"
+						>
+							{#each flow.previews as preview (preview.id)}
+								<img
+									src="/media/{preview.thumb}"
+									alt=""
+									width={preview.width}
+									height={preview.height}
+									loading="lazy"
+									class={[
+										'h-fit shrink-0 bg-white object-cover shadow-[0_0_0_1px_rgb(0_0_0/0.06)] dark:shadow-[0_0_0_1px_rgb(255_255_255/0.12)]',
+										flow.viewport === 'desktop' && 'w-[80%] self-center rounded-lg',
+										flow.viewport === 'mobile' && 'w-[42%] rounded-t-2xl'
+									]}
+								/>
+							{/each}
+						</div>
+						<div class="min-w-0 px-0.5 leading-snug">
+							<div class="truncate text-[16px] font-medium">{flow.title || 'Untitled flow'}</div>
+							<div class="truncate text-[14px] text-neutral-500 dark:text-neutral-400">
+								{flow.site_name} · {flow.steps.length}
+								{flow.steps.length === 1 ? 'screen' : 'screens'}
+							</div>
+						</div>
+					</a>
+					<SaveButton table="flow" id={flow.id} label={flow.title || 'flow'} variant="overlay" />
+				</li>
+			{/each}
+		</ul>
+	</section>
+{/if}
+
 {#if editing}
 	<CollectionDialog
 		title="Edit collection"
@@ -127,7 +178,7 @@
 	>
 		<h2 class="text-[20px] font-semibold tracking-tight">Delete “{data.collection.name}”?</h2>
 		<p class="mt-2 text-[15px] text-neutral-500 dark:text-neutral-400">
-			The collection is removed for good. The screens and elements in it stay in the library.
+			The collection is removed for good. What it holds stays in the library.
 		</p>
 		<form method="POST" action="?/delete" class="mt-6 grid grid-cols-2 gap-3" use:enhance>
 			<button

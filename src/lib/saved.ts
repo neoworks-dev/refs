@@ -2,7 +2,7 @@
 // stays out of src/lib/server so the save button can import it.
 
 /** The tables a collection can hold, as named in the `saved` relation of db/schema.surql. */
-export const SAVED_TABLES = ['screen', 'element'] as const;
+export const SAVED_TABLES = ['screen', 'element', 'flow'] as const;
 export type SavedTable = (typeof SAVED_TABLES)[number];
 
 export function isSavedTable(value: unknown): value is SavedTable {

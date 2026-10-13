@@ -1,9 +1,8 @@
 // Every query behind collections: the pages, the save picker and the form actions. A collection
-// holds screens, elements and later flows through the `saved` relation, and nothing here
-// assumes there are only two kinds, so `flow` becomes a new entry of SAVED_TABLES and one more
-// query in `getCollection`.
+// holds screens, elements and flows through the `saved` relation, and nothing here assumes there
+// are only some kinds: a new one is a new entry of SAVED_TABLES and one more query in `getCollection`.
 import { savedKey, type SavedTable } from '../saved.ts';
-import type { Collection, Rect, Screen, Viewport } from '../types.ts';
+import type { Collection, Flow, Rect, Screen, Viewport } from '../types.ts';
 import { db } from './db.ts';
 import { rows as queryRows } from './library.ts';
 import type { LibraryElement } from './queries.ts';
@@ -98,10 +97,22 @@ export async function listCollections(): Promise<CollectionListItem[]> {
 		[...newest.values()]
 			.filter((link) => link.item_table === table)
 			.map((link) => new RecordId(table, link.out));
+	// A flow's cover is the first screen of the flow.
+	const flowFirstScreens = await rows<{ id: string; screen?: string }>(
+		'SELECT id, steps[0].screen AS screen FROM flow WHERE id IN $ids',
+		{ ids: coverIds('flow') }
+	);
+	const firstScreenByFlow = new Map(flowFirstScreens.map((flow) => [flow.id, flow.screen]));
+	const screenIds = [
+		...coverIds('screen'),
+		...flowFirstScreens.flatMap((flow) =>
+			flow.screen === undefined ? [] : [new RecordId('screen', flow.screen)]
+		)
+	];
 	const [screens, elements] = await Promise.all([
 		rows<{ id: string; thumb: string; width: number; height: number; viewport: Viewport }>(
 			'SELECT id, media.thumb AS thumb, width, height, viewport FROM screen WHERE id IN $ids',
-			{ ids: coverIds('screen') }
+			{ ids: screenIds }
 		),
 		rows<{ id: string; media: string; rect: Rect }>(
 			'SELECT id, media, rect FROM element WHERE id IN $ids',
@@ -114,8 +125,9 @@ export async function listCollections(): Promise<CollectionListItem[]> {
 	return collections.map((collection) => {
 		const link = newest.get(collection.id);
 		let cover: CollectionCover | undefined;
-		if (link?.item_table === 'screen') {
-			const screen = screenById.get(link.out);
+		if (link?.item_table === 'screen' || link?.item_table === 'flow') {
+			const screenId = link.item_table === 'flow' ? firstScreenByFlow.get(link.out) : link.out;
+			const screen = screenId === undefined ? undefined : screenById.get(screenId);
 			if (screen) cover = { table: 'screen', ...screen };
 		} else if (link?.item_table === 'element') {
 			const element = elementById.get(link.out);
@@ -134,12 +146,23 @@ export interface SavedScreen extends Screen {
 	site_icon?: string;
 }
 
+export interface SavedFlow extends Flow {
+	site_name: string;
+	site_icon?: string;
+	/** The first few screens of the flow, which the collection page shows as its preview. */
+	previews: { id: string; thumb: string; width: number; height: number }[];
+}
+
 export interface CollectionDetail {
 	collection: Collection;
-	/** Both lists are newest saved first. */
+	/** The lists are newest saved first. */
 	screens: SavedScreen[];
 	elements: LibraryElement[];
+	flows: SavedFlow[];
 }
+
+/** How many screens of a saved flow its card previews. */
+const FLOW_PREVIEW_STEPS = 3;
 
 export async function getCollection(slug: string): Promise<CollectionDetail | undefined> {
 	const [collection] = await rows<Collection>('SELECT * FROM collection WHERE slug = $slug', {
@@ -155,7 +178,7 @@ export async function getCollection(slug: string): Promise<CollectionDetail | un
 	const idsOf = (table: SavedTable) =>
 		saved.filter((link) => link.item_table === table).map((link) => new RecordId(table, link.out));
 
-	const [screens, elements] = await Promise.all([
+	const [screens, elements, flows] = await Promise.all([
 		rows<SavedScreen>(
 			`SELECT *, site.name AS site_name, site.icon AS site_icon OMIT embedding
 			 FROM screen WHERE id IN $ids`,
@@ -166,8 +189,22 @@ export async function getCollection(slug: string): Promise<CollectionDetail | un
 				site.name AS site_name, site.icon AS site_icon OMIT embedding
 			 FROM element WHERE id IN $ids`,
 			{ ids: idsOf('element') }
+		),
+		rows<Flow & { site_name: string; site_icon?: string }>(
+			'SELECT *, site.name AS site_name, site.icon AS site_icon FROM flow WHERE id IN $ids',
+			{ ids: idsOf('flow') }
 		)
 	]);
+
+	const previewScreens = await rows<SavedFlow['previews'][number]>(
+		'SELECT id, media.thumb AS thumb, width, height FROM screen WHERE id IN $ids',
+		{
+			ids: flows.flatMap((flow) =>
+				flow.steps.slice(0, FLOW_PREVIEW_STEPS).map((step) => new RecordId('screen', step.screen))
+			)
+		}
+	);
+	const previewById = new Map(previewScreens.map((screen) => [screen.id, screen]));
 
 	// `IN` returns rows in table order, so put them back in the order they were saved.
 	const position = new Map(saved.map((link, index) => [link.out, index]));
@@ -176,7 +213,15 @@ export async function getCollection(slug: string): Promise<CollectionDetail | un
 	return {
 		collection,
 		screens: screens.sort(bySavedOrder),
-		elements: elements.sort(bySavedOrder)
+		elements: elements.sort(bySavedOrder),
+		flows: flows
+			.map((flow) => ({
+				...flow,
+				previews: flow.steps
+					.slice(0, FLOW_PREVIEW_STEPS)
+					.flatMap((step) => previewById.get(step.screen) ?? [])
+			}))
+			.sort(bySavedOrder)
 	};
 }
 

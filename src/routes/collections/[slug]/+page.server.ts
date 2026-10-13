@@ -6,7 +6,10 @@ export const load: PageServerLoad = async ({ params, url }) => {
 	const detail = await getCollection(params.slug);
 	if (!detail) error(404, 'Collection not found');
 	const show = url.searchParams.get('show');
-	return { ...detail, show: show === 'screens' || show === 'elements' ? show : undefined };
+	return {
+		...detail,
+		show: show === 'screens' || show === 'elements' || show === 'flows' ? show : undefined
+	};
 };
 
 export const actions: Actions = {

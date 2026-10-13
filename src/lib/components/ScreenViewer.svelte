@@ -21,6 +21,8 @@
 		site: Site;
 		/** Element to highlight when the viewer opens, from the `?el=` param. */
 		initialElementId?: string;
+		/** Set when the viewer was opened from a flow: `detail` then counts along that flow's steps. */
+		flowTitle?: string;
 		/** Link target for a screen in the viewer (keeps the page's other params). */
 		screenHref: (screenId: string) => string;
 		onclose: () => void;
@@ -28,7 +30,8 @@
 		onnavigate: (screenId: string) => void;
 	};
 
-	let { detail, site, initialElementId, screenHref, onclose, onnavigate }: Props = $props();
+	let { detail, site, initialElementId, flowTitle, screenHref, onclose, onnavigate }: Props =
+		$props();
 
 	const screen = $derived(detail.screen);
 
@@ -410,7 +413,8 @@
 			{/if}
 
 			<p class="mt-8 text-[13px] text-neutral-400 dark:text-neutral-500">
-				{detail.position} of {detail.total} · use ← → to browse, Esc to close
+				{detail.position} of {detail.total}{flowTitle ? ` in “${flowTitle}”` : ''} · use ← → to browse,
+				Esc to close
 			</p>
 		</aside>
 	</div>
