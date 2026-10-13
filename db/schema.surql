@@ -145,6 +145,21 @@ DEFINE FIELD OVERWRITE created_at ON flow TYPE datetime DEFAULT time::now() READ
 DEFINE INDEX IF NOT EXISTS flow_crawl ON flow FIELDS crawl;
 DEFINE INDEX IF NOT EXISTS flow_site ON flow FIELDS site, viewport;
 
+-- A named set of saved references, like the pricing pages kept for one project. There are no
+-- accounts, so collections belong to the library as a whole.
+DEFINE TABLE OVERWRITE collection SCHEMAFULL;
+DEFINE FIELD OVERWRITE name ON collection TYPE string;
+DEFINE FIELD OVERWRITE slug ON collection TYPE string;
+DEFINE FIELD OVERWRITE description ON collection TYPE option<string>;
+DEFINE FIELD OVERWRITE created_at ON collection TYPE datetime DEFAULT time::now() READONLY;
+DEFINE FIELD OVERWRITE updated_at ON collection TYPE datetime DEFAULT ALWAYS time::now();
+DEFINE INDEX IF NOT EXISTS collection_slug ON collection FIELDS slug UNIQUE;
+
+-- collection -> saved -> screen | element | flow. Saving the same thing twice is refused by the index.
+DEFINE TABLE OVERWRITE saved TYPE RELATION IN collection OUT screen | element | flow SCHEMAFULL;
+DEFINE FIELD OVERWRITE saved_at ON saved TYPE datetime DEFAULT time::now() READONLY;
+DEFINE INDEX IF NOT EXISTS saved_once ON saved FIELDS in, out UNIQUE;
+
 -- API keys for the MCP server. Only a SHA-256 hash of the key is stored; the key itself is shown
 -- once when it is created and can't be recovered. Keys look like `refs_<random>`.
 DEFINE TABLE OVERWRITE api_key SCHEMAFULL;

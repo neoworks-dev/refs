@@ -13,6 +13,7 @@
 	import { humanise } from '../labels.ts';
 	import type { Site } from '../types.ts';
 	import Modal from './Modal.svelte';
+	import SaveButton from './SaveButton.svelte';
 	import SiteIcon from './SiteIcon.svelte';
 
 	type Props = {
@@ -50,6 +51,9 @@
 	const highlighted = $derived(
 		detail.elements.find((element) => element.id === (hoveredId ?? selectedId))
 	);
+
+	// Hovering only highlights, so saving works on the picked element, which stays put.
+	const selectedElement = $derived(detail.elements.find((element) => element.id === selectedId));
 
 	// Scroll the selected element into view. Rects are CSS px in page coordinates, so the
 	// position inside the rendered image is a plain ratio of its height.
@@ -167,6 +171,7 @@
 		<div
 			class="order-5 ml-auto flex items-center gap-2 lg:order-3 lg:ml-0 lg:flex-1 lg:justify-end"
 		>
+			<SaveButton table="screen" id={screen.id} label={screen.path} variant="pill" />
 			<button
 				type="button"
 				onclick={copy}
@@ -339,6 +344,21 @@
 					>{detail.elements.length} on this screen</span
 				>
 			</div>
+			{#if selectedElement}
+				<div
+					class="mt-3 flex items-center justify-between gap-3 rounded-2xl bg-neutral-100 p-2 pl-4 dark:bg-white/[0.07]"
+				>
+					<span class="min-w-0 truncate text-[14px] font-medium">
+						{selectedElement.name || humanise(selectedElement.label ?? selectedElement.kind)}
+					</span>
+					<SaveButton
+						table="element"
+						id={selectedElement.id}
+						label={selectedElement.name || selectedElement.kind}
+						variant="pill"
+					/>
+				</div>
+			{/if}
 			{#if detail.elements.length > 0}
 				<ul class="mt-3 grid grid-cols-2 gap-2.5 sm:grid-cols-4 lg:grid-cols-2">
 					{#each detail.elements as element (element.id)}

@@ -53,9 +53,9 @@
 <header class="sticky top-0 z-30 bg-white/90 backdrop-blur-md dark:bg-night/90">
 	<!-- Below 1024px the search collapses into an icon next to the buttons on the right. -->
 	<div
-		class="mx-auto flex h-[68px] max-w-[1920px] items-center gap-3 px-6 sm:px-8 lg:grid lg:h-[76px] lg:grid-cols-[1fr_minmax(0,34rem)_1fr] lg:gap-6 lg:px-10"
+		class="mx-auto flex h-[68px] max-w-[1920px] items-center gap-3 px-6 max-sm:h-auto max-sm:flex-wrap max-sm:py-3 sm:px-8 lg:grid lg:h-[76px] lg:grid-cols-[1fr_minmax(0,34rem)_1fr] lg:gap-6 lg:px-10"
 	>
-		<div class="flex items-center gap-5 sm:gap-8">
+		<div class="flex items-center gap-5 max-sm:contents sm:gap-8">
 			<!-- "Refs" wordmark: three stacked bars (a pile of references) next to the name. -->
 			<a
 				href="/"
@@ -69,10 +69,11 @@
 				</svg>
 				<span class="text-[22px] font-semibold tracking-[-0.04em] max-sm:hidden">Refs</span>
 			</a>
+			<!-- Three links do not fit beside the buttons on a phone, so there they get a row below. -->
 			<nav
-				class="flex items-center gap-4 text-[16px] font-medium tracking-tight sm:gap-6 sm:text-[17px]"
+				class="flex items-center gap-4 text-[16px] font-medium tracking-tight max-sm:order-last max-sm:basis-full sm:gap-6 sm:text-[17px]"
 			>
-				{#each [{ href: '/', label: 'Sites', active: page.url.pathname === '/' || page.url.pathname.startsWith('/sites/') }, { href: '/elements', label: 'Elements', active: page.url.pathname === '/elements' }] as link (link.href)}
+				{#each [{ href: '/', label: 'Sites', active: page.url.pathname === '/' || page.url.pathname.startsWith('/sites/') }, { href: '/elements', label: 'Elements', active: page.url.pathname === '/elements' }, { href: '/collections', label: 'Collections', active: page.url.pathname.startsWith('/collections') }] as link (link.href)}
 					<a
 						href={link.href}
 						aria-current={link.active ? 'page' : undefined}

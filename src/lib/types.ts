@@ -19,7 +19,7 @@ export type ElementKind =
 	| 'table';
 
 // The model service's fixed vocabularies, so the app can filter by them. The source is
-// ml/refs_ml/schemas.py (PAGE_TYPES and ELEMENT_LABELS['section']): these lists must match it.
+// ml/refs_ml/schemas.py (PAGE_TYPES, FLOW_CATEGORIES and ELEMENT_LABELS['section']): these lists must match it.
 export const PAGE_TYPES = [
 	'home',
 	'pricing',
@@ -44,6 +44,26 @@ export const PAGE_TYPES = [
 	'other'
 ] as const;
 export type PageType = (typeof PAGE_TYPES)[number];
+
+export const FLOW_CATEGORIES = [
+	'onboarding',
+	'signing_up',
+	'logging_in',
+	'checkout',
+	'subscribing',
+	'pricing_and_plans',
+	'searching',
+	'filtering_and_sorting',
+	'browsing_products',
+	'reading_content',
+	'exploring_features',
+	'contacting',
+	'getting_help',
+	'customer_stories',
+	'settings',
+	'other'
+] as const;
+export type FlowCategory = (typeof FLOW_CATEGORIES)[number];
 
 export const SECTION_LABELS = [
 	'hero',
@@ -163,6 +183,23 @@ export interface Flow {
 	category?: string;
 	steps: FlowStep[];
 	created_at: string;
+}
+
+export interface Collection {
+	id: string;
+	name: string;
+	slug: string;
+	description?: string;
+	created_at: string;
+	updated_at: string;
+}
+
+/** A collection's link to one saved screen, element or flow. */
+export interface Saved {
+	id: string;
+	in: string;
+	out: string;
+	saved_at: string;
 }
 
 export interface ApiKey {

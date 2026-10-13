@@ -1,6 +1,7 @@
 <script lang="ts">
 	import type { ElementListItem } from '#lib/server/queries.ts';
 	import { humanise } from '../labels.ts';
+	import SaveButton from './SaveButton.svelte';
 	import SiteIcon from './SiteIcon.svelte';
 
 	type Props = {
@@ -51,7 +52,7 @@
 </script>
 
 <!-- The tile is the grid item itself, because a wide tile has to span two columns. -->
-<li class={[shape === 'wide' && 'sm:col-span-2']}>
+<li class={['group/card relative', shape === 'wide' && 'sm:col-span-2']}>
 	<a
 		{href}
 		class="group flex flex-col gap-2.5 rounded-3xl focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-black dark:focus-visible:outline-white"
@@ -95,4 +96,6 @@
 			</div>
 		</div>
 	</a>
+	<!-- A sibling of the link, because a button cannot sit inside a link. -->
+	<SaveButton table="element" id={element.id} label={title} variant="overlay" />
 </li>
