@@ -106,6 +106,9 @@ PROFILES = {
             # and planning gets the site map, so 32k leaves room for both.
             context_tokens=32768,
             images_per_request=10,
+            # The network volume is a FUSE mount, where vLLM otherwise reads the weights in
+            # small scattered pieces. Reading the files in one go first is faster there.
+            extra_arguments=["--safetensors-load-strategy=prefetch"],
         ),
         grounder=None,
         # 6 of 80 GB, about what the embedder gets on the small card.
