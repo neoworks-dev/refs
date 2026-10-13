@@ -1,0 +1,74 @@
+version: '3'
+
+# Everything runs from the repo root, except the model service, which lives in ml/.
+# Pass arguments after `--`, e.g. `task crawl -- https://linear.app --viewport both`.
+
+tasks:
+  db:
+    desc: Start SurrealDB in docker on 127.0.0.1:8010
+    cmds:
+      - docker compose up -d surrealdb
+
+  dev:
+    desc: Start the database and the app
+    deps: [db]
+    cmds:
+      - bun run dev {{.CLI_ARGS}}
+
+  crawler:
+    desc: Start the worker that picks up queued crawls
+    deps: [db]
+    cmds:
+      - bun crawler/worker.ts
+
+  ml:
+    desc: Start the model servers and their API (VLM on 8020, embedder on 8021, API on 8022)
+    dir: ml
+    cmds:
+      - uv run serve {{.CLI_ARGS}}
+
+  ml:download:
+    desc: Download the model weights
+    dir: ml
+    cmds:
+      - uv run serve download
+
+  up:
+    desc: Run the app, the crawler worker and the model service together
+    deps: [dev, crawler, ml]
+
+  crawl:
+    desc: 'Crawl a site now, e.g. task crawl -- https://linear.app --viewport both'
+    deps: [db]
+    cmds:
+      - bun crawler/cli.ts {{.CLI_ARGS}}
+
+  enrich:
+    desc: Run the models over the current crawls, optionally of one site slug
+    cmds:
+      - bun crawler/enrich.ts {{.CLI_ARGS}}
+
+  flows:
+    desc: Recut the flows of the current crawls, optionally of one site slug
+    cmds:
+      - bun crawler/flows.ts {{.CLI_ARGS}}
+
+  api-key:
+    desc: 'Manage MCP API keys, e.g. task api-key -- create "Laptop"'
+    cmds:
+      - bun scripts/api-key.ts {{.CLI_ARGS}}
+
+  check:
+    desc: Type check everything, including the crawler and tests
+    cmds:
+      - bun run check
+
+  test:
+    desc: Run the crawler tests
+    cmds:
+      - bun test {{.CLI_ARGS}}
+
+  build:
+    desc: Build the app
+    cmds:
+      - bun run build

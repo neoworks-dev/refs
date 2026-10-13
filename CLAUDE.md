@@ -24,6 +24,8 @@ Every site is captured on desktop (1440x900) and on mobile (iPhone 15 Pro), both
 
 ## Commands
 
+The `Taskfile.yml` wraps these (`go-task --list`); `go-task up` runs the app, the worker and the model service together.
+
 ```
 bun run db:up      start SurrealDB
 bun run dev        the app
