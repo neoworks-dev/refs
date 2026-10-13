@@ -1,7 +1,15 @@
 <script lang="ts">
 	import type { ElementListItem } from '#lib/server/queries.ts';
+	import SiteIcon from './SiteIcon.svelte';
 
-	let { element, href }: { element: ElementListItem; href: string } = $props();
+	type Props = {
+		element: ElementListItem;
+		href: string;
+		/** Names the site under the crop, for lists that mix sites. */
+		site?: { name: string; icon?: string };
+	};
+
+	let { element, href, site }: Props = $props();
 
 	// Crops come in very different shapes, so the tile picks one of four presentations. All of
 	// them sit on the same fixed-height gray stage to keep the grid calm, and none is ever shown
@@ -32,21 +40,23 @@
 	);
 	const kindLabel = $derived(element.kind.charAt(0).toUpperCase() + element.kind.slice(1));
 	const title = $derived(element.name || kindLabel);
-	// An unnamed element already shows its kind as the title.
-	const subtitle = $derived(
-		element.name ? `${kindLabel} · ${element.screen_path}` : element.screen_path
-	);
+	// An unnamed element already shows its kind as the title. Next to the site's own icon the page
+	// path matters less than the site's name.
+	const subtitle = $derived.by(() => {
+		if (site) return element.name ? `${site.name} · ${kindLabel}` : site.name;
+		return element.name ? `${kindLabel} · ${element.screen_path}` : element.screen_path;
+	});
 </script>
 
 <!-- The tile is the grid item itself, because a wide tile has to span two columns. -->
 <li class={[shape === 'wide' && 'sm:col-span-2']}>
 	<a
 		{href}
-		class="group flex flex-col gap-2.5 rounded-3xl focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-black"
+		class="group flex flex-col gap-2.5 rounded-3xl focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-black dark:focus-visible:outline-white"
 	>
 		<div
 			class={[
-				'relative flex h-56 justify-center overflow-hidden rounded-3xl bg-neutral-100 transition-colors group-hover:bg-neutral-200/70 sm:h-60',
+				'relative flex h-56 justify-center overflow-hidden rounded-3xl bg-neutral-100 transition-colors group-hover:bg-neutral-200/70 sm:h-60 dark:bg-white/[0.07] dark:group-hover:bg-white/[0.11]',
 				shape === 'tall' ? 'items-start px-5 pt-5' : 'items-center p-5'
 			]}
 		>
@@ -62,7 +72,8 @@
 					'h-auto max-w-full',
 					(shape === 'wide' || shape === 'tall') && 'w-full',
 					(shape === 'small' || shape === 'fit') && 'max-h-full w-auto object-contain',
-					shape !== 'small' && 'bg-white shadow-[0_0_0_1px_rgb(0_0_0/0.06)]',
+					shape !== 'small' &&
+						'bg-white shadow-[0_0_0_1px_rgb(0_0_0/0.06)] dark:shadow-[0_0_0_1px_rgb(255_255_255/0.1)]',
 					shape === 'tall' ? 'rounded-t-lg' : shape !== 'small' && 'rounded-lg'
 				]}
 				style:max-width={shape === 'small' || shape === 'fit'
@@ -70,10 +81,15 @@
 					: `${element.rect.w}px`}
 			/>
 		</div>
-		<div class="min-w-0 px-1 leading-snug">
-			<div class="truncate text-[15px] font-medium">{title}</div>
-			<div class="truncate text-[14px] text-neutral-500">
-				{subtitle}
+		<div class="flex min-w-0 items-center gap-2.5 px-1">
+			{#if site}
+				<SiteIcon name={site.name} icon={site.icon} class="size-9 rounded-[10px]" />
+			{/if}
+			<div class="min-w-0 leading-snug">
+				<div class="truncate text-[15px] font-medium">{title}</div>
+				<div class="truncate text-[14px] text-neutral-500 dark:text-neutral-400">
+					{subtitle}
+				</div>
 			</div>
 		</div>
 	</a>

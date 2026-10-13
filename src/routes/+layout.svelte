@@ -21,7 +21,7 @@ appearing so quick navigations do not flash it. -->
 		role="progressbar"
 		aria-label="Loading"
 	>
-		<div class="h-full w-1/3 animate-progress bg-black"></div>
+		<div class="h-full w-1/3 animate-progress bg-black dark:bg-white"></div>
 	</div>
 {/if}
 

@@ -110,7 +110,7 @@
 <Modal
 	label="Screen viewer"
 	{onclose}
-	class="flex h-dvh w-dvw max-w-[1840px] flex-col overflow-hidden bg-white shadow-2xl sm:h-[calc(100dvh-48px)] sm:w-[calc(100vw-48px)] sm:rounded-[28px]"
+	class="flex h-dvh w-dvw max-w-[1840px] flex-col overflow-hidden bg-white shadow-2xl sm:h-[calc(100dvh-48px)] sm:w-[calc(100vw-48px)] sm:rounded-[28px] dark:bg-night dark:ring-1 dark:ring-white/10"
 >
 	<!-- Below 1024px the header wraps into two rows: the title and close button on top, then the
 	image switch and the actions. The `order-*` classes arrange that without duplicating markup. -->
@@ -123,7 +123,9 @@
 				<h2 class="truncate text-[17px] font-semibold tracking-tight">
 					{screen.title || screen.path}
 				</h2>
-				<div class="truncate text-[14px] text-neutral-500">{site.name} · {screen.path}</div>
+				<div class="truncate text-[14px] text-neutral-500 dark:text-neutral-400">
+					{site.name} · {screen.path}
+				</div>
 			</div>
 		</div>
 
@@ -131,7 +133,7 @@
 			type="button"
 			aria-label="Close"
 			onclick={onclose}
-			class="order-2 flex size-10 shrink-0 items-center justify-center rounded-full bg-neutral-100 transition-colors hover:bg-neutral-200 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-black lg:order-4"
+			class="order-2 flex size-10 shrink-0 items-center justify-center rounded-full bg-neutral-100 transition-colors hover:bg-neutral-200 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-black lg:order-4 dark:bg-white/[0.07] dark:hover:bg-white/20 dark:focus-visible:outline-white"
 		>
 			<X class="size-[18px]" strokeWidth={2.25} />
 		</button>
@@ -139,7 +141,7 @@
 		<div class="order-3 basis-full lg:hidden" aria-hidden="true"></div>
 
 		<div
-			class="order-4 inline-flex rounded-full bg-neutral-100 p-1 lg:order-2"
+			class="order-4 inline-flex rounded-full bg-neutral-100 p-1 lg:order-2 dark:bg-white/[0.07]"
 			role="group"
 			aria-label="Image"
 		>
@@ -150,8 +152,10 @@
 					onclick={() => (mode = value)}
 					class={[
 						'rounded-full px-4 py-1.5 text-[15px] font-medium whitespace-nowrap transition-colors',
-						mode === value && 'bg-white shadow-[0_1px_2px_rgb(0_0_0/0.12)]',
-						mode !== value && 'text-neutral-500 hover:text-black'
+						mode === value &&
+							'bg-white shadow-[0_1px_2px_rgb(0_0_0/0.12)] dark:bg-white/[0.16] dark:shadow-none',
+						mode !== value &&
+							'text-neutral-500 hover:text-black dark:text-neutral-400 dark:hover:text-white'
 					]}
 				>
 					{label}
@@ -166,7 +170,7 @@
 				type="button"
 				onclick={copy}
 				aria-label="Copy image"
-				class="inline-flex h-11 items-center justify-center gap-2 rounded-full border border-neutral-200 bg-white px-5 text-[15px] font-medium whitespace-nowrap transition-colors hover:bg-neutral-100 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-black max-sm:w-11 max-sm:px-0"
+				class="inline-flex h-11 items-center justify-center gap-2 rounded-full border border-neutral-200 bg-white px-5 text-[15px] font-medium whitespace-nowrap transition-colors hover:bg-neutral-100 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-black max-sm:w-11 max-sm:px-0 dark:border-white/15 dark:bg-transparent dark:hover:bg-white/10 dark:focus-visible:outline-white"
 			>
 				{#if copyState === 'copied'}
 					<Check class="size-4 sm:-ml-1" strokeWidth={2.5} />
@@ -183,7 +187,7 @@
 				href="/media/{imageKey}"
 				download="{site.slug}-{screen.id}-{mode}.webp"
 				aria-label="Download"
-				class="inline-flex h-11 items-center justify-center gap-2 rounded-full border border-neutral-200 bg-white px-5 text-[15px] font-medium whitespace-nowrap transition-colors hover:bg-neutral-100 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-black max-sm:w-11 max-sm:px-0"
+				class="inline-flex h-11 items-center justify-center gap-2 rounded-full border border-neutral-200 bg-white px-5 text-[15px] font-medium whitespace-nowrap transition-colors hover:bg-neutral-100 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-black max-sm:w-11 max-sm:px-0 dark:border-white/15 dark:bg-transparent dark:hover:bg-white/10 dark:focus-visible:outline-white"
 			>
 				<Download class="size-4 sm:-ml-1" strokeWidth={2} />
 				<span class="max-sm:hidden">Download</span>
@@ -201,12 +205,12 @@
 				bind:this={scroller}
 				tabindex="0"
 				autofocus
-				class="absolute inset-x-3 inset-y-0 overflow-y-auto rounded-3xl bg-neutral-100 px-3 pt-4 pb-8 outline-none sm:px-6 sm:pt-8 sm:pb-12 lg:right-0 lg:rounded-t-3xl lg:rounded-b-none"
+				class="absolute inset-x-3 inset-y-0 overflow-y-auto rounded-3xl bg-neutral-100 px-3 pt-4 pb-8 outline-none sm:px-6 sm:pt-8 sm:pb-12 lg:right-0 lg:rounded-t-3xl lg:rounded-b-none dark:bg-white/[0.07]"
 			>
 				<!-- Natural CSS width caps the image so a 390px phone page is not blown up. -->
 				<div
 					bind:this={imageBox}
-					class="relative mx-auto w-full overflow-hidden bg-white shadow-[0_0_0_1px_rgb(0_0_0/0.06),0_12px_32px_-16px_rgb(0_0_0/0.3)]"
+					class="relative mx-auto w-full overflow-hidden bg-white shadow-[0_0_0_1px_rgb(0_0_0/0.06),0_12px_32px_-16px_rgb(0_0_0/0.3)] dark:shadow-[0_0_0_1px_rgb(255_255_255/0.12)]"
 					style:max-width="{screen.width}px"
 					style:aspect-ratio="{screen.width} / {imageHeight}"
 					style:border-radius={screen.viewport === 'mobile' ? '28px' : '14px'}
@@ -239,7 +243,7 @@
 					aria-label="Previous screen"
 					data-sveltekit-replacestate
 					data-sveltekit-reset="false"
-					class="absolute top-1/2 left-5 flex size-10 -translate-y-1/2 items-center justify-center rounded-full bg-white shadow-[0_2px_12px_rgb(0_0_0/0.18)] transition-transform hover:scale-105 sm:left-6 sm:size-12"
+					class="absolute top-1/2 left-5 flex size-10 -translate-y-1/2 items-center justify-center rounded-full bg-white shadow-[0_2px_12px_rgb(0_0_0/0.18)] transition-transform hover:scale-105 sm:left-6 sm:size-12 dark:bg-neutral-800 dark:text-white dark:shadow-[0_2px_12px_rgb(0_0_0/0.5)]"
 				>
 					<ChevronLeft class="size-6" strokeWidth={2} />
 				</a>
@@ -250,7 +254,7 @@
 					aria-label="Next screen"
 					data-sveltekit-replacestate
 					data-sveltekit-reset="false"
-					class="absolute top-1/2 right-5 flex size-10 -translate-y-1/2 items-center justify-center rounded-full bg-white shadow-[0_2px_12px_rgb(0_0_0/0.18)] transition-transform hover:scale-105 sm:right-6 sm:size-12"
+					class="absolute top-1/2 right-5 flex size-10 -translate-y-1/2 items-center justify-center rounded-full bg-white shadow-[0_2px_12px_rgb(0_0_0/0.18)] transition-transform hover:scale-105 sm:right-6 sm:size-12 dark:bg-neutral-800 dark:text-white dark:shadow-[0_2px_12px_rgb(0_0_0/0.5)]"
 				>
 					<ChevronRight class="size-6" strokeWidth={2} />
 				</a>
@@ -259,7 +263,7 @@
 
 		<aside class="shrink-0 px-4 pt-6 pb-8 sm:px-6 lg:w-[380px] lg:overflow-y-auto">
 			<dl class="grid grid-cols-[auto_1fr] gap-x-6 gap-y-3 text-[15px]">
-				<dt class="text-neutral-500">Page</dt>
+				<dt class="text-neutral-500 dark:text-neutral-400">Page</dt>
 				<dd class="min-w-0">
 					<a
 						href={screen.url}
@@ -271,22 +275,22 @@
 						<ExternalLink class="size-3.5 shrink-0" strokeWidth={2} />
 					</a>
 				</dd>
-				<dt class="text-neutral-500">Viewport</dt>
+				<dt class="text-neutral-500 dark:text-neutral-400">Viewport</dt>
 				<dd class="font-medium">
 					<span class="capitalize">{screen.viewport}</span> ({screen.width}×{screen.height})
 				</dd>
-				<dt class="text-neutral-500">Full page</dt>
+				<dt class="text-neutral-500 dark:text-neutral-400">Full page</dt>
 				<dd class="font-medium">{screen.width}×{screen.full_height}</dd>
-				<dt class="text-neutral-500">Type</dt>
+				<dt class="text-neutral-500 dark:text-neutral-400">Type</dt>
 				<dd class="font-medium">{screen.kind === 'state' ? 'State' : 'Page'}</dd>
-				<dt class="text-neutral-500">Captured</dt>
+				<dt class="text-neutral-500 dark:text-neutral-400">Captured</dt>
 				<dd class="font-medium">
 					{new Date(screen.captured_at).toLocaleDateString('en', {
 						dateStyle: 'medium',
 						timeZone: 'UTC'
 					})}
 				</dd>
-				<dt class="text-neutral-500">Reached by</dt>
+				<dt class="text-neutral-500 dark:text-neutral-400">Reached by</dt>
 				<dd class="flex flex-col gap-1.5 font-medium">
 					{#each detail.reachedBy as via, index (index)}
 						<span>
@@ -301,13 +305,13 @@
 								href={screenHref(via.fromId)}
 								data-sveltekit-replacestate
 								data-sveltekit-reset="false"
-								class="underline underline-offset-4 hover:text-neutral-600"
+								class="underline underline-offset-4 hover:text-neutral-600 dark:hover:text-neutral-300"
 							>
 								{via.fromPath}
 							</a>
 						</span>
 					{:else}
-						<span class="font-normal text-neutral-500">
+						<span class="font-normal text-neutral-500 dark:text-neutral-400">
 							{screen.depth === 0 ? 'Start page' : 'Unknown'}
 						</span>
 					{/each}
@@ -316,7 +320,9 @@
 
 			<div class="mt-8 flex items-baseline justify-between">
 				<h3 class="text-[17px] font-semibold tracking-tight">Elements</h3>
-				<span class="text-[14px] text-neutral-500">{detail.elements.length} on this screen</span>
+				<span class="text-[14px] text-neutral-500 dark:text-neutral-400"
+					>{detail.elements.length} on this screen</span
+				>
 			</div>
 			{#if detail.elements.length > 0}
 				<ul class="mt-3 grid grid-cols-2 gap-2.5 sm:grid-cols-4 lg:grid-cols-2">
@@ -335,9 +341,10 @@
 										elementId: selectedId === element.id ? undefined : element.id
 									})}
 								class={[
-									'flex w-full flex-col gap-1.5 rounded-2xl bg-neutral-100 p-2 text-left transition-shadow',
-									selectedId === element.id && 'ring-2 ring-black',
-									selectedId !== element.id && 'hover:ring-1 hover:ring-black/30'
+									'flex w-full flex-col gap-1.5 rounded-2xl bg-neutral-100 p-2 text-left transition-shadow dark:bg-white/[0.07]',
+									selectedId === element.id && 'ring-2 ring-black dark:ring-white',
+									selectedId !== element.id &&
+										'hover:ring-1 hover:ring-black/30 dark:hover:ring-white/40'
 								]}
 							>
 								<span class="flex h-24 items-center justify-center overflow-hidden rounded-xl">
@@ -345,23 +352,27 @@
 										src="/media/{element.media}"
 										alt=""
 										loading="lazy"
-										class="max-h-full max-w-full rounded-md bg-white object-contain shadow-[0_0_0_1px_rgb(0_0_0/0.06)]"
+										class="max-h-full max-w-full rounded-md bg-white object-contain shadow-[0_0_0_1px_rgb(0_0_0/0.06)] dark:shadow-[0_0_0_1px_rgb(255_255_255/0.1)]"
 										style:width="{element.rect.w}px"
 									/>
 								</span>
 								<span class="truncate px-1 text-[13px] leading-tight">
 									<span class="font-medium capitalize">{element.kind}</span>
-									{#if element.name}<span class="text-neutral-500"> · {element.name}</span>{/if}
+									{#if element.name}<span class="text-neutral-500 dark:text-neutral-400">
+											· {element.name}</span
+										>{/if}
 								</span>
 							</button>
 						</li>
 					{/each}
 				</ul>
 			{:else}
-				<p class="mt-3 text-[15px] text-neutral-500">No elements were cropped from this screen.</p>
+				<p class="mt-3 text-[15px] text-neutral-500 dark:text-neutral-400">
+					No elements were cropped from this screen.
+				</p>
 			{/if}
 
-			<p class="mt-8 text-[13px] text-neutral-400">
+			<p class="mt-8 text-[13px] text-neutral-400 dark:text-neutral-500">
 				{detail.position} of {detail.total} · use ← → to browse, Esc to close
 			</p>
 		</aside>

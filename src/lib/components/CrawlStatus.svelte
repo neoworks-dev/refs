@@ -23,7 +23,7 @@
 	<div class="mt-8 flex flex-col gap-2" aria-live="polite">
 		{#each active as crawl (crawl.id)}
 			<div
-				class="flex flex-wrap items-center gap-x-5 gap-y-1 rounded-2xl bg-neutral-100 px-5 py-3.5 text-[15px]"
+				class="flex flex-wrap items-center gap-x-5 gap-y-1 rounded-2xl bg-neutral-100 px-5 py-3.5 text-[15px] dark:bg-white/[0.07]"
 			>
 				<span class="flex items-center gap-2.5 font-medium">
 					<span
@@ -39,18 +39,18 @@
 							: 'Queued'}
 					</span>
 				</span>
-				<span class="min-w-0 flex-1 truncate text-neutral-500">
+				<span class="min-w-0 flex-1 truncate text-neutral-500 dark:text-neutral-400">
 					{crawl.activity ??
 						(crawl.status === 'queued' ? 'Waiting for the crawler to pick this up…' : 'Starting…')}
 				</span>
-				<span class="text-neutral-500 tabular-nums">
+				<span class="text-neutral-500 tabular-nums dark:text-neutral-400">
 					{crawl.screens} of {crawl.max_screens} screens · {crawl.elements} elements
 				</span>
 			</div>
 		{/each}
 		{#each failed as crawl (crawl.id)}
 			<div
-				class="flex items-start gap-3 rounded-2xl bg-red-50 px-5 py-3.5 text-[15px] text-red-900"
+				class="flex items-start gap-3 rounded-2xl bg-red-50 px-5 py-3.5 text-[15px] text-red-900 dark:bg-red-500/10 dark:text-red-200"
 			>
 				<TriangleAlert class="mt-0.5 size-[18px] shrink-0" strokeWidth={2} />
 				<span>

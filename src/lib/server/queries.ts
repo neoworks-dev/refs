@@ -3,12 +3,17 @@
 import type { Crawl, ElementKind, Rect, Screen, Site, UiElement, Viewport } from '../types.ts';
 import { VIEWPORTS } from '../types.ts';
 import { db } from './db.ts';
-import { plain, RecordId } from './surreal.ts';
+import {
+	elementConditions,
+	rows as queryRows,
+	sourceCrawls,
+	type NormalisedUrl
+} from './library.ts';
+import { RecordId } from './surreal.ts';
 
-/** Runs a query with a single statement and returns its rows as plain JSON. */
+/** Runs a query with a single statement on the app's connection and returns its rows as plain JSON. */
 async function rows<Row>(sql: string, variables: Record<string, unknown> = {}): Promise<Row[]> {
-	const [result] = await (await db()).query(sql, variables).collect<[Row[]]>();
-	return plain<Row[]>(result);
+	return queryRows<Row>(await db(), sql, variables);
 }
 
 const ACTIVE_STATUSES = ['queued', 'running'];
@@ -19,40 +24,6 @@ const DEFAULT_MAX_DEPTH = 3;
 // ---------------------------------------------------------------------------------------------
 // Adding sites and queueing crawls
 // ---------------------------------------------------------------------------------------------
-
-export interface NormalisedUrl {
-	url: string;
-	host: string;
-	slug: string;
-}
-
-/**
- * Mirrors the crawler CLI: https is the default scheme, host is lowercased, the hash and the
- * trailing slash are dropped. `host` additionally loses `www.`, and `slug` is the host with dots
- * replaced by dashes. Returns undefined when the input is not a usable http(s) URL.
- */
-export function normaliseUrl(input: string): NormalisedUrl | undefined {
-	const trimmed = input.trim();
-	if (!trimmed) return undefined;
-	// A scheme is anything like `http://`. A bare `example.com:3000` has no `//` so it gets https.
-	const withScheme = /^[a-z][a-z0-9+.-]*:\/\//i.test(trimmed) ? trimmed : `https://${trimmed}`;
-
-	let parsed: URL;
-	try {
-		parsed = new URL(withScheme);
-	} catch {
-		return undefined;
-	}
-	if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return undefined;
-
-	const host = parsed.hostname.toLowerCase().replace(/^www\./, '');
-	// Reject things like `https://foo`: a crawlable site needs a dotted host (or localhost).
-	if (!host.includes('.') && host !== 'localhost') return undefined;
-
-	parsed.hash = '';
-	const url = parsed.href.replace(/\/$/, '');
-	return { url, host, slug: host.replaceAll('.', '-') };
-}
 
 export interface AddSiteInput {
 	url: NormalisedUrl;
@@ -320,7 +291,7 @@ export async function getSiteOverview(slug: string): Promise<SiteOverview | unde
 	if (!site) return undefined;
 	const siteRecord = new RecordId('site', site.id);
 
-	const [crawls, screenGroups] = await Promise.all([
+	const [crawls, screenGroups, currentCrawls] = await Promise.all([
 		rows<Crawl>('SELECT * FROM crawl WHERE site = $site ORDER BY created_at DESC LIMIT 20', {
 			site: siteRecord
 		}),
@@ -329,24 +300,16 @@ export async function getSiteOverview(slug: string): Promise<SiteOverview | unde
 		rows<{ crawl: string; count: number }>(
 			'SELECT crawl, count() AS count FROM screen WHERE site = $site GROUP BY crawl',
 			{ site: siteRecord }
-		)
+		),
+		db().then((database) => sourceCrawls(database, site.id))
 	]);
 
 	const screensByCrawl = new Map(screenGroups.map((group) => [group.crawl, group.count]));
 	const sources: SiteOverview['sources'] = {};
 	const screenCounts: SiteOverview['screenCounts'] = { desktop: 0, mobile: 0 };
-	for (const viewport of VIEWPORTS) {
-		const candidates = crawls.filter(
-			(crawl) => crawl.viewport === viewport && (screensByCrawl.get(crawl.id) ?? 0) > 0
-		);
-		// Prefer a crawl that finished or is in progress over a cancelled/failed partial one.
-		const source =
-			candidates.find((crawl) => crawl.status === 'done' || crawl.status === 'running') ??
-			candidates[0];
-		if (source) {
-			sources[viewport] = source.id;
-			screenCounts[viewport] = screensByCrawl.get(source.id) ?? 0;
-		}
+	for (const crawl of currentCrawls) {
+		sources[crawl.viewport] = crawl.id;
+		screenCounts[crawl.viewport] = screensByCrawl.get(crawl.id) ?? 0;
 	}
 
 	const kindCounts: SiteOverview['kindCounts'] = { desktop: {}, mobile: {} };
@@ -354,11 +317,10 @@ export async function getSiteOverview(slug: string): Promise<SiteOverview | unde
 		VIEWPORTS.map(async (viewport) => {
 			const crawlId = sources[viewport];
 			if (crawlId === undefined) return;
+			const { conditions, variables } = elementConditions({}, [new RecordId('crawl', crawlId)]);
 			const groups = await rows<{ kind: ElementKind; count: number }>(
-				`SELECT kind, count() AS count FROM element
-				 WHERE screen IN (SELECT VALUE id FROM screen WHERE crawl = $crawl)
-				 GROUP BY kind`,
-				{ crawl: new RecordId('crawl', crawlId) }
+				`SELECT kind, count() AS count FROM element WHERE ${conditions.join(' AND ')} GROUP BY kind`,
+				variables
 			);
 			for (const group of groups) kindCounts[viewport][group.kind] = group.count;
 		})
@@ -382,14 +344,64 @@ export interface ElementListItem extends UiElement {
 
 /** Elements of one crawl, optionally of one kind, in page order. */
 export function listElements(crawlId: string, kind?: ElementKind): Promise<ElementListItem[]> {
+	const { conditions, variables } = elementConditions({ kind }, [new RecordId('crawl', crawlId)]);
 	return rows<ElementListItem>(
 		`SELECT *, screen.seq AS screen_seq, screen.path AS screen_path FROM element
-		 WHERE screen IN (SELECT VALUE id FROM screen WHERE crawl = $crawl)
-			AND ($kind = '' OR kind = $kind)
+		 WHERE ${conditions.join(' AND ')}
 		 ORDER BY screen_seq, rect.y
 		 LIMIT 400`,
-		{ crawl: new RecordId('crawl', crawlId), kind: kind ?? '' }
+		variables
 	);
+}
+
+// ---------------------------------------------------------------------------------------------
+// Element library
+// ---------------------------------------------------------------------------------------------
+
+export interface LibraryElement extends ElementListItem {
+	site_name: string;
+	site_icon?: string;
+}
+
+export interface Library {
+	/** At most `limit` elements, grouped by site and in page order within each site. */
+	elements: LibraryElement[];
+	hasMore: boolean;
+	/** Elements per kind in the viewport, across all sites; the counts behind the filter chips. */
+	kindCounts: Partial<Record<ElementKind, number>>;
+}
+
+/** Elements of every site's current crawl in one viewport, optionally of one kind. */
+export async function listLibrary(
+	criteria: { viewport: Viewport; kind?: ElementKind },
+	limit: number
+): Promise<Library> {
+	const crawls = (await sourceCrawls(await db()))
+		.filter((crawl) => crawl.viewport === criteria.viewport)
+		.map((crawl) => new RecordId('crawl', crawl.id));
+	const inViewport = elementConditions({ viewport: criteria.viewport }, crawls);
+	const filtered = elementConditions(criteria, crawls);
+
+	const [elements, kindGroups] = await Promise.all([
+		// One extra row tells whether there is a next page without a separate count.
+		rows<LibraryElement>(
+			`SELECT *, screen.seq AS screen_seq, screen.path AS screen_path,
+				site.name AS site_name, site.icon AS site_icon
+			 FROM element WHERE ${filtered.conditions.join(' AND ')}
+			 ORDER BY site, screen_seq, rect.y, id
+			 LIMIT $limit`,
+			{ ...filtered.variables, limit: limit + 1 }
+		),
+		rows<{ kind: ElementKind; count: number }>(
+			`SELECT kind, count() AS count FROM element
+			 WHERE ${inViewport.conditions.join(' AND ')} GROUP BY kind`,
+			inViewport.variables
+		)
+	]);
+
+	const kindCounts: Library['kindCounts'] = {};
+	for (const group of kindGroups) kindCounts[group.kind] = group.count;
+	return { elements: elements.slice(0, limit), hasMore: elements.length > limit, kindCounts };
 }
 
 // ---------------------------------------------------------------------------------------------

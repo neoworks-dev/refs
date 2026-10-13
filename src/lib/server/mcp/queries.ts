@@ -1,16 +1,20 @@
-// Read queries behind the MCP tools. They follow the web app's own queries and return plain JSON
-// like `src/lib/server/queries.ts`, but live here so the tools don't depend on the app's UI queries.
+// Read queries behind the MCP tools. They return plain JSON like `src/lib/server/queries.ts`, and
+// share with it what has to match the website (current crawls, filters) through `../library.ts`.
 import type { Surreal } from 'surrealdb';
-import type { CrawlStatus, ElementKind, Rect, Viewport } from '../../types.ts';
-import { plain, RecordId } from '../surreal.ts';
+import type { ElementKind, Rect, Viewport } from '../../types.ts';
+import {
+	elementConditions,
+	rows,
+	screenConditions,
+	sourceCrawls,
+	type ElementCriteria,
+	type ScreenCriteria
+} from '../library.ts';
+import { RecordId } from '../surreal.ts';
 
-async function rows<Row>(
-	database: Surreal,
-	sql: string,
-	variables: Record<string, unknown> = {}
-): Promise<Row[]> {
-	const [result] = await database.query(sql, variables).collect<[Row[]]>();
-	return plain<Row[]>(result);
+/** The record ids of the crawls whose screens the tools read. */
+async function sourceCrawlIds(database: Surreal): Promise<RecordId[]> {
+	return (await sourceCrawls(database)).map((crawl) => new RecordId('crawl', crawl.id));
 }
 
 export interface SiteRow {
@@ -82,84 +86,6 @@ export interface ReachedBy {
 	source: string;
 }
 
-/** Filters that select screens. Every field is optional and they combine with AND. */
-export interface ScreenCriteria {
-	/** Site slug, which is also the site record id. */
-	site?: string;
-	path?: string;
-	viewport?: Viewport;
-	pageType?: string;
-	/** Lowercased substring, matched against title, path and description. */
-	needle?: string;
-}
-
-interface CrawlRow {
-	id: string;
-	site: string;
-	viewport: Viewport;
-	status: CrawlStatus;
-}
-
-/** Same statuses the web app treats as a finished or live capture. */
-const CAPTURED_STATUSES: CrawlStatus[] = ['done', 'running'];
-
-/**
- * The crawl whose screens are read for each site and viewport. This mirrors the web app: the newest
- * crawl that captured screens, preferring one that finished or is running over a partial cancelled or
- * failed one. Without it, a recrawl or a failed run would show the same page twice.
- */
-export async function sourceCrawls(database: Surreal): Promise<RecordId[]> {
-	const crawls = await rows<CrawlRow>(
-		database,
-		`SELECT id, site, viewport, status FROM crawl
-		 WHERE id IN (SELECT VALUE crawl FROM screen)
-		 ORDER BY created_at DESC`
-	);
-	const chosen = new Map<string, CrawlRow>();
-	for (const crawl of crawls) {
-		const key = `${crawl.site} ${crawl.viewport}`;
-		const current = chosen.get(key);
-		// The list is newest first, so an earlier candidate only loses to a later captured one.
-		const currentIsCaptured = current !== undefined && CAPTURED_STATUSES.includes(current.status);
-		if (current === undefined || (!currentIsCaptured && CAPTURED_STATUSES.includes(crawl.status))) {
-			chosen.set(key, crawl);
-		}
-	}
-	return [...chosen.values()].map((crawl) => new RecordId('crawl', crawl.id));
-}
-
-/** WHERE conditions and variables for screens that match `criteria`, restricted to source crawls. */
-function screenConditions(
-	criteria: ScreenCriteria,
-	crawls: RecordId[]
-): { conditions: string[]; variables: Record<string, unknown> } {
-	const conditions = ['crawl IN $crawls'];
-	const variables: Record<string, unknown> = { crawls };
-	if (criteria.site !== undefined) {
-		conditions.push('site = $site');
-		variables.site = new RecordId('site', criteria.site);
-	}
-	if (criteria.path !== undefined) {
-		conditions.push('path = $path');
-		variables.path = criteria.path;
-	}
-	if (criteria.viewport !== undefined) {
-		conditions.push('viewport = $viewport');
-		variables.viewport = criteria.viewport;
-	}
-	if (criteria.pageType !== undefined) {
-		conditions.push('page_type = $pageType');
-		variables.pageType = criteria.pageType;
-	}
-	if (criteria.needle) {
-		conditions.push(`(string::lowercase(title) CONTAINS $needle
-			OR string::lowercase(path) CONTAINS $needle
-			OR string::lowercase(description ?? '') CONTAINS $needle)`);
-		variables.needle = criteria.needle;
-	}
-	return { conditions, variables };
-}
-
 /** Which page of a result list to read. The caller asks for one more row than it shows, to learn whether there is a next page. */
 export interface Paging {
 	limit: number;
@@ -172,7 +98,7 @@ export async function searchScreens(
 	criteria: ScreenCriteria,
 	paging: Paging
 ): Promise<ScreenRow[]> {
-	const crawls = await sourceCrawls(database);
+	const crawls = await sourceCrawlIds(database);
 	const { conditions, variables } = screenConditions(criteria, crawls);
 	return rows<ScreenRow>(
 		database,
@@ -190,7 +116,7 @@ export async function searchScreens(
  * capture order, so a site's pages read top to bottom as they were crawled.
  */
 export async function listPages(database: Surreal, criteria: ScreenCriteria): Promise<PageGroup[]> {
-	const crawls = await sourceCrawls(database);
+	const crawls = await sourceCrawlIds(database);
 	const { conditions, variables } = screenConditions(criteria, crawls);
 	const screens = await rows<
 		Pick<ScreenRow, 'id' | 'path' | 'title' | 'viewport' | 'kind' | 'media'> & { seq: number }
@@ -230,40 +156,11 @@ export async function listPages(database: Surreal, criteria: ScreenCriteria): Pr
 /** Elements of matching screens, filtered by kind and name or label, in page order. */
 export async function searchElements(
 	database: Surreal,
-	criteria: {
-		site?: string;
-		path?: string;
-		viewport?: Viewport;
-		kind?: ElementKind;
-		needle?: string;
-	},
+	criteria: ElementCriteria,
 	paging: Paging
 ): Promise<ElementRow[]> {
-	const crawls = await sourceCrawls(database);
-	// The screen conditions handle the site and page scope. Element rows also carry site and
-	// viewport, so those are filtered directly.
-	const screens = screenConditions({ site: criteria.site, path: criteria.path }, crawls);
-	const conditions = [
-		`screen IN (SELECT VALUE id FROM screen WHERE ${screens.conditions.join(' AND ')})`
-	];
-	const variables: Record<string, unknown> = { ...screens.variables };
-	if (criteria.site !== undefined) {
-		conditions.push('site = $site');
-		variables.site = new RecordId('site', criteria.site);
-	}
-	if (criteria.viewport !== undefined) {
-		conditions.push('viewport = $viewport');
-		variables.viewport = criteria.viewport;
-	}
-	if (criteria.kind !== undefined) {
-		conditions.push('kind = $kind');
-		variables.kind = criteria.kind;
-	}
-	if (criteria.needle) {
-		conditions.push(`(string::lowercase(name) CONTAINS $needle
-			OR string::lowercase(label ?? '') CONTAINS $needle)`);
-		variables.needle = criteria.needle;
-	}
+	const crawls = await sourceCrawlIds(database);
+	const { conditions, variables } = elementConditions(criteria, crawls);
 	return rows<ElementRow>(
 		database,
 		`SELECT id, site, screen, viewport, kind, name, label, rect, media FROM element
@@ -315,7 +212,7 @@ export async function searchSites(
 /** Counts and cover media for sites, read from the source crawls. */
 async function summariseSites(database: Surreal, sites: SiteRow[]): Promise<SiteSummary[]> {
 	if (sites.length === 0) return [];
-	const crawls = await sourceCrawls(database);
+	const crawls = await sourceCrawlIds(database);
 	const siteIds = sites.map((site) => new RecordId('site', site.id));
 	const coverIds = sites.flatMap((site) =>
 		[site.cover.desktop, site.cover.mobile]
@@ -363,7 +260,7 @@ export async function getScreen(
 	database: Surreal,
 	screenId: string
 ): Promise<{ screen: ScreenRow; elements: ElementRow[]; reachedBy: ReachedBy[] } | undefined> {
-	const crawls = await sourceCrawls(database);
+	const crawls = await sourceCrawlIds(database);
 	const [screen] = await rows<ScreenRow>(
 		database,
 		`SELECT id, site, url, path, title, viewport, kind, page_type, description,

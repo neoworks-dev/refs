@@ -8,7 +8,7 @@ The app and the crawler are two processes that only share the database and the m
 
 ```
 src/              SvelteKit 3 app (Svelte 5, Tailwind 4, adapter-node)
-src/lib/server/   surreal.ts (connection, schema, plain()), media.ts (storage), db.ts (app singletons), queries.ts (every app query)
+src/lib/server/   surreal.ts (connection, schema, plain()), media.ts (storage), db.ts (app singletons), library.ts (queries the app and the MCP share), queries.ts (the app's own queries), mcp/ (the MCP server)
 src/lib/types.ts  plain shapes of the database records, shared by app and crawler
 src/env.ts        server env vars, declared with defineEnvVars
 crawler/          Playwright crawler run with bun: worker (job queue), cli, crawl loop, capture, in-page code, rules
@@ -60,7 +60,7 @@ Crawls never log in. Refs only captures what a site shows to a visitor who isn't
 
 ## How we work
 
-Implementation is handed to at most two Sonnet subagents. The lead splits the work, gives each agent its own files, owns the shared contract (`db/schema.surql`, `src/lib/types.ts`, `src/lib/server/{surreal,media,db}.ts`, `src/env.ts`) and reviews what comes back against this file. Every subagent prompt includes the code style below and the rule that work is only done when verified.
+Implementation is handed to at most three subagents at a time, Sonnet unless asked otherwise. The lead splits the work, gives each agent its own files, owns the shared contract (`db/schema.surql`, `src/lib/types.ts`, `src/lib/server/{surreal,media,db}.ts`, `src/env.ts`) and reviews what comes back against this file. Every subagent prompt includes the code style below and the rule that work is only done when verified.
 
 Work is done when it has been shown to work, not when it compiles. For the UI that means driving it with Playwright and looking at the screenshots next to the matching Mobbin reference. For the crawler it means crawling real sites and looking at the produced images. `bun run check` passes either way. Scratch scripts go in `/tmp`, never in the repo root, because Vite reloads on new files there.
 

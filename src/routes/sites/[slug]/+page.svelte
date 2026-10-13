@@ -4,28 +4,16 @@
 	import { page } from '$app/state';
 	import { Box } from '@lucide/svelte';
 	import CrawlStatus from '#lib/components/CrawlStatus.svelte';
+	import ElementKindChips from '#lib/components/ElementKindChips.svelte';
 	import ElementTile from '#lib/components/ElementTile.svelte';
 	import ScreenCard from '#lib/components/ScreenCard.svelte';
 	import ScreenViewer from '#lib/components/ScreenViewer.svelte';
 	import SegmentedToggle from '#lib/components/SegmentedToggle.svelte';
 	import SiteIcon from '#lib/components/SiteIcon.svelte';
-	import type { ElementKind, Viewport } from '#lib/types.ts';
+	import type { Viewport } from '#lib/types.ts';
 	import type { PageProps } from './$types';
 
 	let { data }: PageProps = $props();
-
-	const kindLabels: Record<ElementKind, string> = {
-		section: 'Sections',
-		header: 'Headers',
-		footer: 'Footers',
-		nav: 'Navigation',
-		button: 'Buttons',
-		input: 'Inputs',
-		form: 'Forms',
-		dialog: 'Dialogs',
-		menu: 'Menus',
-		table: 'Tables'
-	};
 
 	const viewports: Viewport[] = ['desktop', 'mobile'];
 
@@ -40,11 +28,6 @@
 	);
 	const lastCrawled = $derived(
 		data.crawls.find((crawl) => crawl.status === 'done' && crawl.finished_at)?.finished_at
-	);
-	const kindCounts = $derived(data.kindCounts[data.viewport]);
-	// Only kinds that exist on this viewport get a chip; "All" is always there.
-	const kindChips = $derived(
-		(Object.keys(kindLabels) as ElementKind[]).filter((kind) => (kindCounts[kind] ?? 0) > 0)
 	);
 
 	// Poll while a crawl is queued or running so the status strip and the grids fill in live.
@@ -101,7 +84,7 @@
 	</h1>
 	{#if data.site.description}
 		<p
-			class="mt-3 line-clamp-2 max-w-3xl text-[17px] leading-snug tracking-[-0.01em] text-neutral-500 sm:text-[20px]"
+			class="mt-3 line-clamp-2 max-w-3xl text-[17px] leading-snug tracking-[-0.01em] text-neutral-500 sm:text-[20px] dark:text-neutral-400"
 		>
 			{data.site.description}
 		</p>
@@ -109,7 +92,7 @@
 
 	<dl class="mt-6 grid grid-cols-2 gap-x-8 gap-y-4 text-[17px] sm:flex sm:flex-wrap sm:gap-x-10">
 		<div>
-			<dt class="text-[15px] text-neutral-500">Viewports</dt>
+			<dt class="text-[15px] text-neutral-500 dark:text-neutral-400">Viewports</dt>
 			<dd class="font-medium">
 				<span class="capitalize"
 					>{viewports.filter((viewport) => data.sources[viewport]).join(', ')}</span
@@ -118,15 +101,15 @@
 			</dd>
 		</div>
 		<div>
-			<dt class="text-[15px] text-neutral-500">Screens</dt>
+			<dt class="text-[15px] text-neutral-500 dark:text-neutral-400">Screens</dt>
 			<dd class="font-medium">{totalScreens}</dd>
 		</div>
 		<div>
-			<dt class="text-[15px] text-neutral-500">Elements</dt>
+			<dt class="text-[15px] text-neutral-500 dark:text-neutral-400">Elements</dt>
 			<dd class="font-medium">{totalElements}</dd>
 		</div>
 		<div>
-			<dt class="text-[15px] text-neutral-500">Last crawled</dt>
+			<dt class="text-[15px] text-neutral-500 dark:text-neutral-400">Last crawled</dt>
 			<dd class="font-medium">
 				{lastCrawled
 					? new Date(lastCrawled).toLocaleDateString('en', { dateStyle: 'medium', timeZone: 'UTC' })
@@ -134,7 +117,7 @@
 			</dd>
 		</div>
 		<div>
-			<dt class="text-[15px] text-neutral-500">Site</dt>
+			<dt class="text-[15px] text-neutral-500 dark:text-neutral-400">Site</dt>
 			<dd class="font-medium">
 				<a
 					href={data.site.url}
@@ -152,7 +135,7 @@
 		<form method="POST" action={activeCrawls.length > 0 ? '?/cancel' : '?/recrawl'} use:enhance>
 			<button
 				type="submit"
-				class="inline-flex h-11 items-center justify-center rounded-full bg-black px-5 text-[15px] font-medium whitespace-nowrap text-white transition-colors hover:bg-neutral-800 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-black"
+				class="inline-flex h-11 items-center justify-center rounded-full bg-black px-5 text-[15px] font-medium whitespace-nowrap text-white transition-colors hover:bg-neutral-800 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-black dark:bg-white dark:text-black dark:hover:bg-neutral-200 dark:focus-visible:outline-white"
 			>
 				{activeCrawls.length > 0 ? 'Cancel crawl' : 'Recrawl'}
 			</button>
@@ -161,7 +144,7 @@
 			href={data.site.url}
 			target="_blank"
 			rel="noopener noreferrer"
-			class="inline-flex h-11 items-center justify-center rounded-full border border-neutral-200 bg-white px-5 text-[15px] font-medium whitespace-nowrap transition-colors hover:bg-neutral-100 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-black"
+			class="inline-flex h-11 items-center justify-center rounded-full border border-neutral-200 bg-white px-5 text-[15px] font-medium whitespace-nowrap transition-colors hover:bg-neutral-100 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-black dark:border-white/15 dark:bg-transparent dark:hover:bg-white/10 dark:focus-visible:outline-white"
 		>
 			Visit site
 		</a>
@@ -172,7 +155,7 @@
 
 <!-- Below 640px the viewport switch and the tabs stack, because they do not fit side by side. -->
 <div
-	class="mt-10 flex flex-col gap-4 sm:h-14 sm:flex-row sm:items-center sm:gap-5 sm:border-b sm:border-neutral-200/70"
+	class="mt-10 flex flex-col gap-4 sm:h-14 sm:flex-row sm:items-center sm:gap-5 sm:border-b sm:border-neutral-200/70 dark:sm:border-white/10"
 >
 	<SegmentedToggle
 		label="Viewport"
@@ -191,9 +174,9 @@
 			}
 		]}
 	/>
-	<span class="hidden h-6 w-px bg-neutral-200 sm:block"></span>
+	<span class="hidden h-6 w-px bg-neutral-200 sm:block dark:bg-white/15"></span>
 	<nav
-		class="flex h-12 items-center gap-7 border-b border-neutral-200/70 sm:h-full sm:border-b-0"
+		class="flex h-12 items-center gap-7 border-b border-neutral-200/70 sm:h-full sm:border-b-0 dark:border-white/10"
 		aria-label="Content"
 		data-sveltekit-reset="false"
 	>
@@ -205,15 +188,16 @@
 				class={[
 					'relative flex h-full items-center text-[17px] font-medium tracking-tight transition-colors',
 					data.tab === tab.value &&
-						'text-black after:absolute after:inset-x-0 after:-bottom-px after:h-0.5 after:rounded-full after:bg-black',
-					data.tab !== tab.value && 'text-neutral-400 hover:text-black'
+						'text-black after:absolute after:inset-x-0 after:-bottom-px after:h-0.5 after:rounded-full after:bg-black dark:text-white dark:after:bg-white',
+					data.tab !== tab.value &&
+						'text-neutral-400 hover:text-black dark:text-neutral-500 dark:hover:text-white'
 				]}
 			>
 				{tab.label}
 			</a>
 		{/each}
 		<span
-			class="flex h-full cursor-not-allowed items-center text-[17px] font-medium tracking-tight text-neutral-300"
+			class="flex h-full cursor-not-allowed items-center text-[17px] font-medium tracking-tight text-neutral-300 dark:text-neutral-600"
 			title="Coming soon"
 			aria-disabled="true"
 		>
@@ -241,34 +225,12 @@
 			{@render empty('screens')}
 		{/if}
 	{:else}
-		<div class="mb-8 flex flex-wrap gap-2" data-sveltekit-reset="false">
-			<a
-				href={link({ kind: undefined })}
-				aria-current={data.kind === undefined ? 'true' : undefined}
-				class={[
-					'inline-flex h-10 items-center rounded-full border px-4 text-[15px] font-medium transition-colors',
-					data.kind === undefined && 'border-black bg-black text-white',
-					data.kind !== undefined && 'border-neutral-200 hover:bg-neutral-100'
-				]}
-			>
-				All
-			</a>
-			{#each kindChips as kind (kind)}
-				<a
-					href={link({ kind })}
-					aria-current={data.kind === kind ? 'true' : undefined}
-					class={[
-						'inline-flex h-10 items-center gap-2 rounded-full border px-4 text-[15px] font-medium transition-colors',
-						data.kind === kind && 'border-black bg-black text-white',
-						data.kind !== kind && 'border-neutral-200 hover:bg-neutral-100'
-					]}
-				>
-					{kindLabels[kind]}
-					<span class={data.kind === kind ? 'text-white/60' : 'text-neutral-400'}>
-						{kindCounts[kind]}
-					</span>
-				</a>
-			{/each}
+		<div class="mb-8">
+			<ElementKindChips
+				counts={data.kindCounts[data.viewport]}
+				active={data.kind}
+				href={(kind) => link({ kind })}
+			/>
 		</div>
 
 		{#if data.elements.length > 0}
@@ -299,12 +261,14 @@
 {/if}
 
 {#snippet empty(what: 'screens' | 'elements')}
-	<div class="flex flex-col items-center rounded-[28px] bg-neutral-50 px-6 py-24 text-center">
-		<Box class="size-9 text-neutral-300" strokeWidth={1.5} />
+	<div
+		class="flex flex-col items-center rounded-[28px] bg-neutral-50 px-6 py-24 text-center dark:bg-white/5"
+	>
+		<Box class="size-9 text-neutral-300 dark:text-neutral-600" strokeWidth={1.5} />
 		<h2 class="mt-5 text-2xl font-semibold tracking-[-0.035em]">
 			{activeCrawls.length > 0 ? `Capturing ${what}…` : `No ${what} yet`}
 		</h2>
-		<p class="mt-2 max-w-sm text-[17px] text-balance text-neutral-500">
+		<p class="mt-2 max-w-sm text-[17px] text-balance text-neutral-500 dark:text-neutral-400">
 			{#if activeCrawls.length > 0}
 				They show up here as the crawler finds them.
 			{:else}

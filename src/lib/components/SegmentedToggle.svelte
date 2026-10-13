@@ -7,7 +7,7 @@
 </script>
 
 <div
-	class="inline-flex rounded-full bg-neutral-100 p-1"
+	class="inline-flex rounded-full bg-neutral-100 p-1 dark:bg-white/[0.07]"
 	role="group"
 	aria-label={label}
 	data-sveltekit-reset="false"
@@ -17,9 +17,11 @@
 			href={option.href}
 			aria-current={option.value === active ? 'true' : undefined}
 			class={[
-				'rounded-full px-4 py-1.5 text-[15px] font-medium transition-colors focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-black',
-				option.value === active && 'bg-white text-black shadow-[0_1px_2px_rgb(0_0_0/0.12)]',
-				option.value !== active && 'text-neutral-500 hover:text-black'
+				'rounded-full px-4 py-1.5 text-[15px] font-medium transition-colors focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-black dark:focus-visible:outline-white',
+				option.value === active &&
+					'bg-white text-black shadow-[0_1px_2px_rgb(0_0_0/0.12)] dark:bg-white/[0.16] dark:text-white dark:shadow-none',
+				option.value !== active &&
+					'text-neutral-500 hover:text-black dark:text-neutral-400 dark:hover:text-white'
 			]}
 		>
 			{option.label}

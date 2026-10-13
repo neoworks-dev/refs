@@ -14,7 +14,10 @@
 	<img
 		src="/media/{icon}"
 		alt=""
-		class={['shrink-0 bg-neutral-100 object-cover ring-1 ring-black/5', className]}
+		class={[
+			'shrink-0 bg-neutral-100 object-cover ring-1 ring-black/5 dark:bg-white/[0.07] dark:ring-white/10',
+			className
+		]}
 	/>
 {:else}
 	<!-- An SVG letter scales with whatever size the caller picked. -->

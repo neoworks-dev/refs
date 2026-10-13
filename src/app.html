@@ -4,6 +4,14 @@
 		<meta charset="utf-8" />
 		<meta name="viewport" content="width=device-width, initial-scale=1" />
 		<meta name="text-scale" content="scale" />
+		<meta name="color-scheme" content="light dark" />
+		<!-- Runs before the first paint so a dark theme never flashes white. An explicit choice in
+		localStorage wins, otherwise the system preference decides. TopBar.svelte keeps it in sync. -->
+		<script>
+			var theme = localStorage.getItem('refs:theme');
+			var dark = theme ? theme === 'dark' : matchMedia('(prefers-color-scheme: dark)').matches;
+			document.documentElement.classList.toggle('dark', dark);
+		</script>
 		%sveltekit.head%
 	</head>
 	<body data-sveltekit-preload-data="hover">

@@ -3,7 +3,7 @@
 import type { CallToolResult, ImageContent } from '@modelcontextprotocol/sdk/types.js';
 import sharp from 'sharp';
 import { media } from '../db.ts';
-import { normaliseUrl } from '../queries.ts';
+import { normaliseUrl } from '../library.ts';
 import { mediaUrl } from '../media.ts';
 import type { ElementRow, PageGroup, ScreenRow, SiteSummary } from './queries.ts';
 

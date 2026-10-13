@@ -1,5 +1,6 @@
 import { fail, redirect } from '@sveltejs/kit';
-import { addSite, normaliseUrl } from '#lib/server/queries.ts';
+import { normaliseUrl } from '#lib/server/library.ts';
+import { addSite } from '#lib/server/queries.ts';
 import type { Viewport } from '#lib/types.ts';
 import type { Actions } from './$types';
 
