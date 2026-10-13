@@ -33,6 +33,11 @@ tasks:
     cmds:
       - uv run serve download
 
+  ml:tunnel:
+    desc: 'Reach the models on a rented GPU through SSH, e.g. task ml:tunnel -- root@1.2.3.4 -p 12345'
+    cmds:
+      - ssh -N -L 8022:127.0.0.1:8022 {{.CLI_ARGS}}
+
   up:
     desc: Run the app, the crawler worker and the model service together
     deps: [dev, crawler, ml]

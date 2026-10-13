@@ -49,6 +49,10 @@ uv run serve api         # FastAPI on :8022
 | 8021 | Embedder (OpenAI-compatible, internal) | no |
 | 8022 | This API | yes |
 
+On a rented 80 GB card, `uv run serve --profile a100` runs Qwen3.8-27B (FP8) as the VLM and
+Holo3.1-4B next to it on :8023 only for pointing at elements, all on vLLM. [runpod/](runpod/)
+walks through renting one and reaching it through an SSH tunnel.
+
 Environment variables (`REFS_VLM_URL`, `REFS_EMBEDDING_URL`, `REFS_API_PORT`, ...) are listed in
 `refs_ml/settings.py`. Interactive API docs are at http://127.0.0.1:8022/docs.
 

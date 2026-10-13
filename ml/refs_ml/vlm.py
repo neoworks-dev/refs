@@ -87,12 +87,16 @@ def image_to_data_uri(image_bytes: bytes, max_side: int) -> tuple[str, tuple[int
     return f"data:image/jpeg;base64,{encoded}", original_size
 
 
-async def chat(messages: list[dict], **parameters) -> dict:
-    """Sends one chat completion request to the VLM server and returns the first choice."""
+async def chat(messages: list[dict], grounding: bool = False, **parameters) -> dict:
+    """Sends one chat completion request and returns the first choice.
+
+    Requests go to the VLM, or with `grounding` to the model that points at elements.
+    """
+    base_url = settings.GROUNDING_BASE_URL if grounding else settings.VLM_BASE_URL
     response = await _client.post(
-        f"{settings.VLM_BASE_URL}/chat/completions",
+        f"{base_url}/chat/completions",
         json={
-            "model": settings.VLM_MODEL,
+            "model": settings.GROUNDING_MODEL if grounding else settings.VLM_MODEL,
             "messages": messages,
             "temperature": 0,
             # Reasoning is off: classification is a perception task, and the extra tokens
@@ -366,6 +370,7 @@ async def locate(data_uri: str, size: tuple[int, int], target: str) -> tuple[int
             {"type": "image_url", "image_url": {"url": data_uri}},
             {"type": "text", "text": prompt},
         ]}],
+        grounding=True,
         response_format=json_schema_format("click_point", schema),
         max_tokens=30,
     )  # fmt: skip

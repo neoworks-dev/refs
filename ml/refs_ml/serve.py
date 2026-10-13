@@ -1,18 +1,28 @@
 """Starts and stops the model servers and the API: `uv run serve [vlm|embeddings|api] [--profile NAME]`.
 
-With no server named, all three start in order and stop together on Ctrl-C. The VLM comes first
-and is fully loaded before the embedder starts, because vLLM sizes its memory pool from what is
-free at that moment, and two servers starting at once would both claim the same memory.
+With no server named, all of them start in order and stop together on Ctrl-C. Each server is
+fully loaded before the next one starts, because vLLM sizes its memory pool from what is free at
+that moment, and two servers starting at once would both claim the same memory.
 
-`uv run serve download` fetches the weights into the Hugging Face cache.
+`uv run serve download [--profile NAME]` fetches the weights into the Hugging Face cache.
+
+Profiles:
+- `holo-4b` (the default) fits a 16 GB card: Holo3.1-4B on llama.cpp decides, points and
+  classifies, next to the embedder on vLLM.
+- `a100` is for a rented 80 GB card (A100 or H100): Qwen3.8-27B in FP8 decides, plans and
+  classifies, and Holo3.1-4B runs next to it only to point at elements, which is what it is
+  trained for. Everything runs on vLLM, which serves many requests at once, so several
+  explorations can share the card. ml/runpod/ sets up a rented machine.
 """
 
 import argparse
+import os
 import shutil
+import signal
 import subprocess
 import sys
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import httpx
 from huggingface_hub import hf_hub_download, snapshot_download
@@ -22,16 +32,19 @@ from . import settings
 EMBEDDING_REPO = "Qwen/Qwen3-VL-Embedding-2B"
 VLM_PORT = 8020
 EMBEDDING_PORT = 8021
+GROUNDING_PORT = 8023
+# The name the separate grounding server advertises, which the API asks for.
+GROUNDING_MODEL_NAME = "grounder"
 
 # Models take minutes to load from disk and compile kernels on first start.
-STARTUP_TIMEOUT_SECONDS = 600
+STARTUP_TIMEOUT_SECONDS = 900
 
 
 @dataclass
-class VlmProfile:
-    """A vision-language model for llama.cpp's `llama-server`.
+class LlamaCppModel:
+    """A GGUF vision-language model for llama.cpp's `llama-server`.
 
-    Quantized GGUF files are what fits on the card next to the embedder. The projector
+    Quantized GGUF files are what fits on a 16 GB card next to the embedder. The projector
     (`mmproj`) is the separate file that turns image patches into tokens.
     """
 
@@ -41,31 +54,85 @@ class VlmProfile:
     context_tokens: int
 
 
-VLM_PROFILES = {
-    # Holo3.1-4B has no official quantization, so this is a community GGUF of H Company's
-    # weights. Q6_K is the largest quantization that leaves room for the embedder.
-    "holo-4b": VlmProfile(
-        repo="mradermacher/Holo-3.1-4B-GGUF",
-        model_file="Holo-3.1-4B.Q6_K.gguf",
-        projector_file="Holo-3.1-4B.mmproj-f16.gguf",
-        context_tokens=16384,
+@dataclass
+class VllmModel:
+    """A vision-language model served by vLLM from a Hugging Face repository."""
+
+    repo: str
+    # Share of the card's memory this server may claim, weights and cache together.
+    memory_share: float
+    context_tokens: int
+    # Images one request may carry. Naming a flow sends up to eight screenshots.
+    images_per_request: int
+    extra_arguments: list[str] = field(default_factory=list)
+
+
+@dataclass
+class Profile:
+    vlm: LlamaCppModel | VllmModel
+    # A separate model that points at elements. None means the VLM does the pointing itself.
+    grounder: VllmModel | None
+    embedding_memory_share: float
+    # Compiling and capturing CUDA graphs takes memory, which is skipped where it is tight.
+    embedding_eager: bool
+
+
+PROFILES = {
+    "holo-4b": Profile(
+        # Holo3.1-4B has no official quantization, so this is a community GGUF of H Company's
+        # weights. Q6_K is the largest quantization that leaves room for the embedder.
+        vlm=LlamaCppModel(
+            repo="mradermacher/Holo-3.1-4B-GGUF",
+            model_file="Holo-3.1-4B.Q6_K.gguf",
+            projector_file="Holo-3.1-4B.mmproj-f16.gguf",
+            context_tokens=16384,
+        ),
+        grounder=None,
+        # Of 16 GB, what is left after the VLM and the desktop.
+        embedding_memory_share=0.40,
+        embedding_eager=True,
+    ),
+    "a100": Profile(
+        # Qwen's own FP8 build, 31 GB. The A100 has no FP8 tensor cores, so vLLM runs the 8-bit
+        # weights with 16-bit math there. That costs little, because generating is limited by
+        # memory bandwidth rather than math. An H100 runs it natively.
+        vlm=VllmModel(
+            repo="Qwen/Qwen3.8-27B-FP8",
+            # 44 of 80 GB: 31 for the weights, the rest caches the requests of parallel explorations.
+            memory_share=0.55,
+            # An exploration step carries a screenshot, the accessibility tree and the history,
+            # and planning gets the site map, so 32k leaves room for both.
+            context_tokens=32768,
+            images_per_request=10,
+        ),
+        grounder=VllmModel(
+            repo="Hcompany/Holo-3.1-4B",
+            # 12 of 80 GB: 10 for the bf16 weights. A grounding request is one image and one
+            # line of text, so it needs little cache.
+            memory_share=0.15,
+            context_tokens=8192,
+            images_per_request=1,
+        ),
+        # 6 of 80 GB, about what the embedder gets on the small card.
+        embedding_memory_share=0.08,
+        embedding_eager=False,
     ),
 }
 DEFAULT_PROFILE = "holo-4b"
 
 
-def vlm_command(profile: VlmProfile) -> list[str]:
+def llama_cpp_command(model: LlamaCppModel) -> list[str]:
     llama_server = shutil.which("llama-server")
     if llama_server is None:
         sys.exit("llama-server was not found. Install llama.cpp with CUDA support first.")
     return [
         llama_server,
-        "--model", hf_hub_download(profile.repo, profile.model_file),
-        "--mmproj", hf_hub_download(profile.repo, profile.projector_file),
+        "--model", hf_hub_download(model.repo, model.model_file),
+        "--mmproj", hf_hub_download(model.repo, model.projector_file),
         "--alias", settings.VLM_MODEL,
         "--host", "127.0.0.1",
         "--port", str(VLM_PORT),
-        "--ctx-size", str(profile.context_tokens),
+        "--ctx-size", str(model.context_tokens),
         "--n-gpu-layers", "99",
         # One request at a time: the context is not split into slots, so the whole window is
         # available to a long agent history.
@@ -75,23 +142,37 @@ def vlm_command(profile: VlmProfile) -> list[str]:
     ]  # fmt: skip
 
 
-def embedding_command() -> list[str]:
+def vllm_command(model: VllmModel, served_name: str, port: int) -> list[str]:
     return [
+        sys.executable, "-m", "vllm.entrypoints.cli.main", "serve", model.repo,
+        "--served-model-name", served_name,
+        "--host", "127.0.0.1",
+        "--port", str(port),
+        "--max-model-len", str(model.context_tokens),
+        "--gpu-memory-utilization", str(model.memory_share),
+        "--limit-mm-per-prompt", f'{{"image": {model.images_per_request}}}',
+        *model.extra_arguments,
+    ]  # fmt: skip
+
+
+def embedding_command(profile: Profile) -> list[str]:
+    command = [
         sys.executable, "-m", "vllm.entrypoints.cli.main", "serve", EMBEDDING_REPO,
         "--served-model-name", settings.EMBEDDING_MODEL,
         "--runner", "pooling",
+        "--host", "127.0.0.1",
         "--port", str(EMBEDDING_PORT),
         # A screenshot is about 1000 tokens, so the model's 32k window would only cost memory.
         "--max-model-len", "2048",
         "--max-num-batched-tokens", "2048",
         "--max-num-seqs", "2",
-        # Share of the card this server may claim. The rest belongs to the VLM and the desktop.
-        "--gpu-memory-utilization", "0.40",
-        # Compiling and capturing CUDA graphs takes memory that does not fit next to the VLM.
-        "--enforce-eager",
+        "--gpu-memory-utilization", str(profile.embedding_memory_share),
         # Memory is reserved for the largest image a request may hold, so this caps it.
         "--limit-mm-per-prompt", '{"image": {"count": 1, "width": 1280, "height": 800}}',
     ]  # fmt: skip
+    if profile.embedding_eager:
+        command.append("--enforce-eager")
+    return command
 
 
 def wait_until_ready(name: str, port: int, process: subprocess.Popen) -> None:
@@ -109,33 +190,64 @@ def wait_until_ready(name: str, port: int, process: subprocess.Popen) -> None:
     sys.exit(f"{name} did not become ready within {STARTUP_TIMEOUT_SECONDS} seconds.")
 
 
+def download(profile: Profile) -> None:
+    if isinstance(profile.vlm, LlamaCppModel):
+        hf_hub_download(profile.vlm.repo, profile.vlm.model_file)
+        hf_hub_download(profile.vlm.repo, profile.vlm.projector_file)
+    else:
+        snapshot_download(profile.vlm.repo)
+    if profile.grounder is not None:
+        snapshot_download(profile.grounder.repo)
+    snapshot_download(EMBEDDING_REPO)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     parser.add_argument("servers", nargs="*", choices=["vlm", "embeddings", "api", "download"])
-    parser.add_argument("--profile", default=DEFAULT_PROFILE, choices=list(VLM_PROFILES))
+    parser.add_argument("--profile", default=DEFAULT_PROFILE, choices=list(PROFILES))
     arguments = parser.parse_args()
-    profile = VLM_PROFILES[arguments.profile]
+    profile = PROFILES[arguments.profile]
 
     if arguments.servers == ["download"]:
-        hf_hub_download(profile.repo, profile.model_file)
-        hf_hub_download(profile.repo, profile.projector_file)
-        snapshot_download(EMBEDDING_REPO)
+        download(profile)
         return
+
+    # The API reads where the grounding model lives from these, see settings.py.
+    api_environment = dict(os.environ)
+    if profile.grounder is not None:
+        api_environment["REFS_GROUNDING_URL"] = f"http://127.0.0.1:{GROUNDING_PORT}/v1"
+        api_environment["REFS_GROUNDING_MODEL"] = GROUNDING_MODEL_NAME
+
+    # A background run (runpod/start.sh) is stopped with SIGTERM rather than Ctrl-C. Treat it
+    # the same, so the servers are stopped too instead of being left holding the GPU.
+    def stop_on_terminate(_signal_number: int, _frame: object) -> None:
+        raise KeyboardInterrupt
+
+    signal.signal(signal.SIGTERM, stop_on_terminate)
 
     wanted = arguments.servers or ["vlm", "embeddings", "api"]
     processes: list[subprocess.Popen] = []
     try:
         if "vlm" in wanted:
-            processes.append(subprocess.Popen(vlm_command(profile)))
+            if isinstance(profile.vlm, LlamaCppModel):
+                command = llama_cpp_command(profile.vlm)
+            else:
+                command = vllm_command(profile.vlm, settings.VLM_MODEL, VLM_PORT)
+            processes.append(subprocess.Popen(command))
             wait_until_ready("VLM", VLM_PORT, processes[-1])
+            if profile.grounder is not None:
+                command = vllm_command(profile.grounder, GROUNDING_MODEL_NAME, GROUNDING_PORT)
+                processes.append(subprocess.Popen(command))
+                wait_until_ready("Grounder", GROUNDING_PORT, processes[-1])
         if "embeddings" in wanted:
-            processes.append(subprocess.Popen(embedding_command()))
+            processes.append(subprocess.Popen(embedding_command(profile)))
             wait_until_ready("Embedder", EMBEDDING_PORT, processes[-1])
         if "api" in wanted:
             processes.append(
                 subprocess.Popen(
                     [sys.executable, "-m", "uvicorn", "refs_ml.api:app", "--host", "127.0.0.1",
-                     "--port", str(settings.API_PORT)]
+                     "--port", str(settings.API_PORT)],
+                    env=api_environment,
                 )  # fmt: skip
             )
         # Block until one of them dies or the user interrupts.
