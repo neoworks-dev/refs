@@ -15,7 +15,7 @@ crawler/          Playwright crawler run with bun: worker (job queue), cli, craw
 db/schema.surql   the data contract, applied on every connect; must stay idempotent
 references/       Mobbin screenshots used as design references (images gitignored, README indexes them)
 data/             crawler output (gitignored)
-ml/               planned: uv-managed Python service for the models
+ml/               uv-managed Python service: llama.cpp VLM on :8020, vLLM embedder on :8021, FastAPI on :8022
 ```
 
 SurrealDB 3.3 runs in docker on `127.0.0.1:8010`, because port 8000 belongs to another project. The data model is in `db/schema.surql`, and its comments are the spec. In short, `site` is a website, `crawl` is one job for one site and one viewport and doubles as the work queue, `screen` is a captured page or UI state, `element` is a crop from a screen, and the `action` relation records which click or link led from one screen to another. Rects are CSS pixels in page coordinates. Media keys are paths like `sites/<site>/<viewport>/<screen>/full.webp`, served under `/media/` with immutable caching, so a key is never overwritten.
@@ -31,6 +31,7 @@ bun run crawler    the worker that picks up queued crawls
 bun run crawl <url> [--viewport desktop|mobile|both] [--max-screens N] [--max-depth N]
 bun run check      type check everything, including crawler/
 bun run build
+cd ml && uv run serve           the model servers and the API (uv run serve download fetches weights)
 ```
 
 ## SvelteKit 3
@@ -50,7 +51,7 @@ Kit 3 differs from v2 in ways that are easy to get wrong from memory. Check `nod
 3. AI exploration: goal-directed browsing and flows.
 4. The element library across sites, collections, and dark mode.
 
-The models run locally on a 16 GB GPU. Holo3.1-4B, a fine-tune of Qwen3.5, drives the browser and classifies screens. If it proves too weak on our screens, Qwen3.8-27B at IQ3_S on llama.cpp replaces it. Qwen3-VL-Embedding-2B produces embeddings, and OmniParser v2.0.1 detects elements only where the DOM gives us nothing usable.
+The models run locally on a 16 GB GPU. Holo3.1-4B, a fine-tune of Qwen3.5, drives the browser and classifies screens. It runs as a Q6_K GGUF on llama.cpp, so it fits next to the embedder, and it passed the exploration eval (8 of 10 real multi-step tasks, see `ml/README.md`). If it proves too weak on our screens, Qwen3.8-27B at IQ3_S replaces it as another profile in `ml/refs_ml/serve.py`. Qwen3-VL-Embedding-2B produces embeddings, and OmniParser v2.0.1 detects elements only where the DOM gives us nothing usable.
 
 Flows will be cut out of the action graph by structure first. A flow starts at a main navigation click and continues while the URL stays under one prefix, the same dialog or form advances, or the clicked labels are words like "Continue". The model then names each flow with a category from a fixed list, a free-text title and a caption per step. Goal-directed exploration produces flows that are labelled by construction.
 

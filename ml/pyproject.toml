@@ -1,0 +1,34 @@
+[project]
+name = "refs-ml"
+version = "0.1.0"
+description = "Local model service for Refs: screen classification, element labels and embeddings behind one small HTTP API."
+requires-python = ">=3.12,<3.13"
+dependencies = [
+    # Serves Qwen3-VL-Embedding-2B. The VLM runs on llama.cpp's llama-server instead.
+    "vllm==0.31.0",
+    "fastapi>=0.133,<0.137",
+    "uvicorn>=0.30",
+    "httpx>=0.27",
+    "huggingface-hub>=1.0",
+    "python-multipart>=0.0.9",
+    "pillow>=10",
+]
+
+[dependency-groups]
+# Only the closed-loop agent evaluation in eval/ needs a browser driver.
+eval = ["playwright>=1.63"]
+
+[tool.uv]
+default-groups = ["eval"]
+# vLLM only ships CUDA wheels for Linux, so resolving for other platforms would be wasted work.
+environments = ["sys_platform == 'linux' and platform_machine == 'x86_64'"]
+
+[project.scripts]
+serve = "refs_ml.serve:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["refs_ml"]

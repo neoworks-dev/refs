@@ -31,3 +31,8 @@ vite.config.ts.timestamp-*
 
 # Local Claude Code settings
 /.claude/settings.local.json
+
+# Model service
+/ml/.venv
+/ml/eval/runs
+__pycache__/
