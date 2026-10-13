@@ -4,7 +4,10 @@ import { describe, expect, test } from 'bun:test';
 import {
 	isDestructive,
 	isPersonalDataField,
+	isThirdPartyLogin,
 	looksLikePersonalData,
+	typedFieldRefusal,
+	typedTextRefusal,
 	normalizeUrl,
 	scoreLink,
 	urlKey
@@ -138,5 +141,103 @@ describe('personal data fields', () => {
 		expect(looksLikePersonalData('+49 170 1234567')).toBe(true);
 		expect(looksLikePersonalData('dark mode')).toBe(false);
 		expect(looksLikePersonalData('2024 pricing')).toBe(false);
+	});
+});
+
+describe('the demo identity', () => {
+	const identity = {
+		email: 'demo+acme@gmail.com',
+		password: 'Xy7!pQ2$mN9&wLk4Rt8*',
+		name: 'Alex Morgan'
+	};
+	const field = (type: string, text = '', autocomplete = '') => ({ type, text, autocomplete });
+
+	test('the account email, password and a made-up name may be typed, other personal data may not', () => {
+		expect(typedTextRefusal(identity.email, identity)).toBeUndefined();
+		expect(typedTextRefusal(identity.password, identity)).toBeUndefined();
+		expect(typedTextRefusal('Alex Morgan', identity)).toBeUndefined();
+		expect(typedTextRefusal('john@example.com', identity)).toContain('personal data');
+		expect(typedTextRefusal('+49 170 1234567', identity)).toContain('personal data');
+		// Without an account nothing personal is typed, not even the same address.
+		expect(typedTextRefusal(identity.email, undefined)).toContain('personal data');
+	});
+
+	test('email, name and company fields take the demo identity', () => {
+		expect(typedFieldRefusal(field('email'), identity.email, identity)).toBeUndefined();
+		expect(
+			typedFieldRefusal(field('text', 'Full name', 'name'), 'Alex Morgan', identity)
+		).toBeUndefined();
+		expect(
+			typedFieldRefusal(field('text', 'Company', 'organization'), 'Morgan Labs', identity)
+		).toBeUndefined();
+		expect(
+			typedFieldRefusal(field('text', 'Work e-mail address'), identity.email, identity)
+		).toBeUndefined();
+	});
+
+	test('the password goes into password fields only, and only the demo one', () => {
+		expect(
+			typedFieldRefusal(field('password', 'Password'), identity.password, identity)
+		).toBeUndefined();
+		expect(
+			typedFieldRefusal(
+				field('text', 'Confirm password', 'new-password'),
+				identity.password,
+				identity
+			)
+		).toBeUndefined();
+		expect(typedFieldRefusal(field('password', 'Password'), 'hunter2', identity)).toContain('demo');
+		expect(typedFieldRefusal(field('textarea', 'Message'), identity.password, identity)).toContain(
+			'password'
+		);
+	});
+
+	test('payment, phone and postal fields stay refused', () => {
+		expect(typedFieldRefusal(field('tel', 'Phone'), '12345', identity)).toContain('payment, phone');
+		expect(
+			typedFieldRefusal(field('text', 'Card number', 'cc-number'), '4242', identity)
+		).toContain('payment, phone');
+		expect(typedFieldRefusal(field('text', 'Street address'), 'Main St 1', identity)).toContain(
+			'payment, phone'
+		);
+		expect(typedFieldRefusal(field('text', 'Mobile number'), '1', identity)).toContain(
+			'payment, phone'
+		);
+		expect(typedFieldRefusal(field('text', 'Date of birth', 'bday'), '1990', identity)).toContain(
+			'payment, phone'
+		);
+	});
+
+	test('search fields are fine either way', () => {
+		expect(
+			typedFieldRefusal(field('search', 'Search by card'), 'pricing', identity)
+		).toBeUndefined();
+		expect(
+			typedFieldRefusal(field('text', 'Find a template'), 'pricing', undefined)
+		).toBeUndefined();
+	});
+
+	test('without an account every personal field is refused as before', () => {
+		expect(typedFieldRefusal(field('email'), 'x', undefined)).toContain('personal data');
+		expect(typedFieldRefusal(field('password'), 'x', undefined)).toContain('personal data');
+	});
+
+	test('submitting and confirming are allowed with an account, paying never is', () => {
+		const account = { hasDemoAccount: true };
+		expect(isDestructive('Submit')).toBe(true);
+		expect(isDestructive('Confirm password')).toBe(true);
+		expect(isDestructive('Submit', account)).toBe(false);
+		expect(isDestructive('Confirm password', account)).toBe(false);
+		expect(isDestructive('Pay now', account)).toBe(true);
+		expect(isDestructive('Delete account', account)).toBe(true);
+		expect(isDestructive('Log out', account)).toBe(true);
+	});
+
+	test('logging in through another service is not what the demo account does', () => {
+		expect(isThirdPartyLogin('Continue with Google')).toBe(true);
+		expect(isThirdPartyLogin('Sign in with GitHub')).toBe(true);
+		expect(isThirdPartyLogin('Log in with SSO')).toBe(true);
+		expect(isThirdPartyLogin('Continue with email')).toBe(false);
+		expect(isThirdPartyLogin('Create account')).toBe(false);
 	});
 });

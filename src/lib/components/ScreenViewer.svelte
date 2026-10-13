@@ -305,6 +305,14 @@
 							· {humanise(screen.page_type)}
 						</span>
 					{/if}
+					{#if screen.signed_in}
+						<!-- Captured behind the login of the site's demo account, not as a visitor sees it. -->
+						<span
+							class="ml-1 rounded-full bg-neutral-100 px-2 py-0.5 text-[12px] font-medium text-neutral-600 dark:bg-white/10 dark:text-neutral-300"
+						>
+							Logged in
+						</span>
+					{/if}
 				</dd>
 				<dt class="text-neutral-500 dark:text-neutral-400">Captured</dt>
 				<dd class="font-medium">

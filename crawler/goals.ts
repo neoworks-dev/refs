@@ -1,27 +1,23 @@
 // Setting goals for a crawled site: the model lists what a visitor could want to do on each page,
 // and the lists are merged into one set of distinct goals in the order worth trying them.
 import type { Surreal } from 'surrealdb';
-import type { RecordId } from '#lib/server/surreal.ts';
+import { RecordId } from '#lib/server/surreal.ts';
 import type { CrawlContext } from './crawl.ts';
 import { callModel, ItemSkipped } from './enrich.ts';
 
 /** Goals asked for per page. Most pages support two or three; the model may return fewer. */
 const GOALS_PER_PAGE = 5;
 /**
- * Pages that offer nothing a visitor without an account would try: forms for logging in, signing
- * up and paying, and the pages behind them. Planning from them only produced goals that type a
- * password or sign in with Google.
+ * Pages that offer nothing to plan from, whether or not there is an account: errors and payment,
+ * and the login and sign-up forms. With an account those two are covered by the one sign-up or
+ * login goal that exploration writes itself; planning from them only produced a second sign-up.
  */
-const UNPLANNED_PAGE_TYPES = new Set([
-	'error',
-	'login',
-	'signup',
-	'checkout',
-	'cart',
-	'onboarding',
-	'settings',
-	'dashboard'
-]);
+const ALWAYS_UNPLANNED_PAGE_TYPES = ['error', 'checkout', 'cart', 'login', 'signup'];
+/**
+ * Pages that only exist behind a login. Without an account nothing on them can be tried, and the
+ * model only listed goals that type a password. With one they are worth planning from.
+ */
+const UNPLANNED_PAGE_TYPES_WITHOUT_ACCOUNT = ['onboarding', 'settings', 'dashboard'];
 /** The model sees the navigation labels as context, and a long list only costs tokens. */
 const MAX_NAV_LABELS = 20;
 const MAX_NAV_LABEL_CHARACTERS = 40;
@@ -50,19 +46,28 @@ export interface PlannedGoal {
 	success: string;
 	/** How many actions the model thinks the goal takes at least. */
 	actions: number;
+	/** The goal needs the demo account's login, so its browser starts logged in. */
+	signedIn: boolean;
 	embedding: number[];
 }
 
 /**
  * The pages the crawl captured, with what the models and the crawler know about each. Pages that
  * exploration itself reached on an earlier run were captured after the crawl finished and are left
- * out, or every run would plan from the last one's finds.
+ * out, or every run would plan from the last one's finds. With `signedInScreens` (screen ids) it
+ * loads exactly those instead: the pages exploration captured while logged in, which are the
+ * starting points of goals behind the login.
  */
 export async function loadMappedPages(
 	db: Surreal,
 	crawl: RecordId,
-	crawlFinishedAt: Date | undefined
+	crawlFinishedAt: Date | undefined,
+	signedInScreens?: string[]
 ): Promise<MappedPage[]> {
+	const which =
+		signedInScreens === undefined
+			? 'captured_at <= $capturedBefore AND signed_in IS NONE'
+			: 'id IN $screens AND signed_in = true';
 	const [pages, elements, clicks] = await db
 		.query(
 			`SELECT id, url, path, title, page_type, description, media.viewport AS image, depth FROM screen
@@ -89,7 +94,15 @@ export async function loadMappedPages(
 			]
 		>();
 
-	return pages.map((page) => {
+	const seenAddresses = new Set<string>();
+	const distinctPages = pages.filter((page) => {
+		// A sign-up and a landing visit can capture the same page; it is planned from once.
+		if (signedInScreens === undefined) return true;
+		if (seenAddresses.has(page.url)) return false;
+		seenAddresses.add(page.url);
+		return true;
+	});
+	return distinctPages.map((page) => {
 		const own = elements
 			.filter((element) => String(element.screen.id) === String(page.id.id))
 			.sort(
@@ -143,17 +156,25 @@ export async function mapConcurrently<Item, Result>(
 	return results;
 }
 
-/** Asks the model, page by page, what a visitor starting there could want to do. */
+/**
+ * Asks the model, page by page, what a visitor starting there could want to do. `account` says
+ * the site has a demo account, which lets the model plan goals behind the login; `signedIn` says
+ * the pages are the ones a logged-in user sees.
+ */
 export async function planGoals(
 	ctx: CrawlContext,
 	pages: MappedPage[],
 	navLabels: string[],
-	concurrency: number
+	concurrency: number,
+	options: { hasAccount: boolean; signedIn: boolean }
 ): Promise<Omit<PlannedGoal, 'embedding'>[]> {
 	const siteMap = JSON.stringify(
 		pages.map((page) => ({ path: page.path, page_type: page.pageType, title: page.title }))
 	);
-	const plannedPages = pages.filter((page) => !UNPLANNED_PAGE_TYPES.has(page.pageType));
+	const unplannedTypes = options.hasAccount
+		? ALWAYS_UNPLANNED_PAGE_TYPES
+		: [...ALWAYS_UNPLANNED_PAGE_TYPES, ...UNPLANNED_PAGE_TYPES_WITHOUT_ACCOUNT];
+	const plannedPages = pages.filter((page) => !unplannedTypes.includes(page.pageType));
 	const goalsPerPage = await mapConcurrently(plannedPages, concurrency, async (page) => {
 		await ctx.throwIfStopped();
 		const image = await ctx.media.get(page.image);
@@ -175,6 +196,8 @@ export async function planGoals(
 		form.set('nav_labels', JSON.stringify(navLabels));
 		form.set('viewport', ctx.job.viewport);
 		form.set('max_goals', String(GOALS_PER_PAGE));
+		form.set('has_account', String(options.hasAccount));
+		form.set('signed_in', String(options.signedIn));
 		try {
 			const plan = await callModel<{
 				goals: {
@@ -183,6 +206,7 @@ export async function planGoals(
 					start_path: string;
 					success: string;
 					actions: number;
+					signed_in: boolean;
 				}[];
 			}>('/plan-goals', form);
 			return plan.goals.map((planned) => ({
@@ -190,7 +214,8 @@ export async function planGoals(
 				category: planned.category,
 				startPath: planned.start_path,
 				success: planned.success,
-				actions: planned.actions
+				actions: planned.actions,
+				signedIn: planned.signed_in
 			}));
 		} catch (error) {
 			// The model produced no usable plan for this page; the other pages still get theirs.

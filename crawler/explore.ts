@@ -4,46 +4,28 @@
 // model for the next action, carry it out, capture the screen it leads to. Each attempt is saved
 // as a flow, whether it reached its goal or not, with a video recorded while it ran.
 //
+// Before the goals, a site without a usable demo account gets one: the model signs up with a plus
+// address of the demo inbox, the verification email is read over IMAP, and the login is saved. The
+// pages behind it are then planned from like any others, and goals that need the login start with
+// the saved one.
+//
 // `bun crawler/explore.ts [site-slug] [--viewport desktop|mobile] [--max-trajectories N]` explores
 // the current crawls of one site, or of every site. Run `bun run enrich` first, so the pages have
 // types and descriptions to plan from.
 import { parseArgs } from 'node:util';
-import type { Browser, Page } from 'playwright';
+import type { Browser } from 'playwright';
 import type { Surreal } from 'surrealdb';
 import { sourceCrawls } from '#lib/server/library.ts';
 import { configFromEnv, connect, RecordId } from '#lib/server/surreal.ts';
 import {
 	VIEWPORTS,
+	type Account,
 	type FlowOutcome,
 	type FlowVideo,
-	type Rect,
 	type Viewport
 } from '#lib/types.ts';
-import {
-	acceptCookieBanner,
-	captureScreen,
-	type CaptureRequest,
-	closeBrowser,
-	computeDomSig,
-	dHash,
-	hammingDistance,
-	launchBrowser,
-	loadPage,
-	newId,
-	openContext,
-	stabilizeLoadedPage,
-	viewportScreenshot
-} from './capture.ts';
-import {
-	carryOut,
-	decideNextAction,
-	describeAction,
-	refusalReason,
-	resolveTarget,
-	settle,
-	type AgentAction,
-	type HistoryEntry
-} from './agent.ts';
+import { failAccount, loadAccount, looksSignedIn, saveLogin, startAccount } from './accounts.ts';
+import { closeBrowser, launchBrowser, loadPage, newId, openContext } from './capture.ts';
 import {
 	COVERED_GOAL_SIMILARITY,
 	cosineSimilarity,
@@ -54,17 +36,18 @@ import {
 	type MappedPage,
 	type PlannedGoal
 } from './goals.ts';
-import {
-	createCrawlContext,
-	CrawlCancelled,
-	SAME_STATE_HASH_DISTANCE,
-	STATE_HASH_DISTANCE,
-	type CrawlContext
-} from './crawl.ts';
+import { createCrawlContext, CrawlCancelled, type CrawlContext } from './crawl.ts';
+import { enrichCrawl } from './enrich.ts';
 import type { CrawlJob } from './jobs.ts';
-import type { ProbedControl } from './page.ts';
-import { setFlowVideo, startRecording } from './recording.ts';
-import { displayPath, isSameSite, normalizeUrl, urlKey } from './rules.ts';
+import { clearLiveGoals } from './live.ts';
+import { mailIsConfigured } from './mail.ts';
+import { setFlowVideo } from './recording.ts';
+import {
+	runTrajectory,
+	ScreenIndex,
+	type Trajectory,
+	type TrajectoryRequest
+} from './trajectory.ts';
 
 /** Same as the schema default of `crawl.max_trajectories`, for crawls from before the field existed. */
 export const DEFAULT_MAX_TRAJECTORIES = 100;
@@ -76,320 +59,6 @@ export const DEFAULT_MAX_TRAJECTORIES = 100;
  * model busy while the browsers wait on pages.
  */
 const DEFAULT_CONCURRENCY = Number(process.env.EXPLORE_CONCURRENCY ?? 1);
-
-interface KnownScreen {
-	id: string;
-	url: string;
-	imageHash: string;
-	domSig: string;
-	depth: number;
-	kind: 'page' | 'state';
-}
-
-/**
- * The screens of the crawl, and how to tell which of them the browser is showing. A trajectory
- * that reaches a stored screen again reuses it; only a screen nobody has seen is captured.
- */
-class ScreenIndex {
-	constructor(private readonly screens: KnownScreen[]) {}
-
-	get(id: string): KnownScreen {
-		return this.screens.find((screen) => screen.id === id)!;
-	}
-
-	/**
-	 * The screen the page shows now, after an action that started from `previous`. Captured when
-	 * it is new. The look is judged at the top of the page, as when the crawler captured pages, so
-	 * scrolling alone never makes a screen.
-	 */
-	async observe(
-		ctx: CrawlContext,
-		page: Page,
-		previous: KnownScreen,
-		textBefore: string
-	): Promise<KnownScreen> {
-		const url = normalizeUrl(page.url())!;
-		const scrollY = await page.evaluate(() => {
-			const position = window.scrollY;
-			window.scrollTo({ top: 0, behavior: 'instant' });
-			return position;
-		});
-		const imageHash = await dHash(await viewportScreenshot(page));
-		const domSig = await computeDomSig(page);
-
-		let screen: KnownScreen | undefined;
-		if (urlKey(previous.url) !== urlKey(url)) {
-			// A page is recognised by its address and a looser look: a hero animation or a banner
-			// that was not there when the crawler came by must not make it a new page.
-			screen = this.screens.find(
-				(known) =>
-					known.kind === 'page' &&
-					urlKey(known.url) === urlKey(url) &&
-					hammingDistance(known.imageHash, imageHash) < STATE_HASH_DISTANCE
-			);
-		} else {
-			// The page did not change, but something on it may have: a menu, a dialog, a tab. Those
-			// change the structure of the page (and often only a few pixels of the viewport).
-			// The text is compared instead of the look, because heroes with a video or a 3D animation
-			// change the look all the time (resend.com's rotating cube did), while a menu or a tab
-			// always changes what the page says.
-			const newPanels = await page.evaluate(() => window.pageInspector!.newPanels());
-			const openedPanel = newPanels.some((panel) => panel.hasPanelRole);
-			const textAfter = await page.evaluate(() => document.body.innerText);
-			const changed = openedPanel || domSig !== previous.domSig || textAfter !== textBefore;
-			screen = changed
-				? this.screens.find(
-						(known) =>
-							known.kind === 'state' &&
-							urlKey(known.url) === urlKey(url) &&
-							known.domSig === domSig &&
-							hammingDistance(known.imageHash, imageHash) < SAME_STATE_HASH_DISTANCE
-					)
-				: previous;
-			if (screen === undefined) {
-				screen = await this.capture(ctx, page, {
-					kind: 'state',
-					url,
-					depth: previous.depth,
-					domSig,
-					newPanels
-				});
-			}
-		}
-		if (screen === undefined) {
-			screen = await this.capture(ctx, page, {
-				kind: 'page',
-				url,
-				depth: previous.depth + 1,
-				domSig
-			});
-		}
-		if (scrollY > 0) {
-			await page.evaluate((top) => window.scrollTo({ top, behavior: 'instant' }), scrollY);
-		}
-		return screen;
-	}
-
-	private async capture(
-		ctx: CrawlContext,
-		page: Page,
-		request: Pick<CaptureRequest, 'kind' | 'url' | 'depth' | 'domSig' | 'newPanels'>
-	): Promise<KnownScreen> {
-		const captured = await captureScreen({ page, ctx, ...request });
-		const screen: KnownScreen = {
-			id: captured.id,
-			url: request.url,
-			imageHash: captured.imageHash,
-			domSig: request.domSig,
-			depth: request.depth,
-			kind: request.kind
-		};
-		this.screens.push(screen);
-		return screen;
-	}
-}
-
-// --- one trajectory ----------------------------------------------------------------------------
-
-/**
- * Past 15 steps the model is wandering: in the closed-loop evaluation in ml/eval, goals that were
- * reached took 2 to 12 steps in all but two long docs searches, and a step costs about 5 s here.
- */
-const MAX_STEPS_PER_GOAL = 15;
-/** Steps in a row that change nothing before the run is called stuck. The prompt warns after 3. */
-const STUCK_AFTER_UNCHANGED_STEPS = 4;
-/** Reaching the same screen this often means the model is going round in circles. */
-const STUCK_AFTER_VISITS = 3;
-/** A viewport whose dHash moved by this many bits has visibly changed, even if the screen is the same. */
-const SMALL_VIEW_CHANGE = 4;
-
-interface TrajectoryStep {
-	screen: string;
-	/** The action that led here; missing on the first step. */
-	action?: RecordId;
-	thought?: string;
-}
-
-interface Trajectory {
-	steps: TrajectoryStep[];
-	outcome: FlowOutcome;
-	reason: string;
-	/** The recording of the run, or undefined when the run is not worth keeping. */
-	video?: FlowVideo;
-}
-
-/**
- * A run that never left its start page is only kept when it ends with one of these verdicts. "Done"
- * is not among them: the goal was already satisfied by the page itself, which the library has.
- */
-const VERDICT_OUTCOMES: FlowOutcome[] = ['gave_up', 'blocked'];
-
-/** Runs one goal in a fresh browser context, from its start page until it ends one way or another. */
-async function runTrajectory(
-	browser: Browser,
-	ctx: CrawlContext,
-	screenIndex: ScreenIndex,
-	goal: PlannedGoal,
-	startPage: MappedPage,
-	flowId: string,
-	goalNumber: number
-): Promise<Trajectory> {
-	const { context } = await openContext(browser, ctx.job.viewport);
-	try {
-		const page = await context.newPage();
-		// Pop-ups (target=_blank links, OAuth windows) are never wanted; native dialogs would block the page.
-		context.on('page', (popup) => {
-			if (popup !== page) void popup.close();
-		});
-		page.on('dialog', (dialog) => void dialog.dismiss());
-		// Submitting a form (signing up, subscribing, paying) is a POST navigation. Whatever the model
-		// presses, it never goes through. Routes added last run first; `fallback` hands on to the
-		// blocking of analytics hosts that `openBrowser` set up.
-		await context.route('**/*', (route) => {
-			const request = route.request();
-			if (request.method() === 'POST' && request.resourceType() === 'document')
-				return route.abort();
-			return route.fallback();
-		});
-
-		await loadPage(page, startPage.url, { waitForBanner: true });
-		const recording = await startRecording(page, ctx.job.viewport);
-		// The first step is the page the goal was planned from, whatever animation the hero is in.
-		let current = screenIndex.get(startPage.id);
-		recording.markStep();
-
-		const steps: TrajectoryStep[] = [{ screen: current.id }];
-		const history: HistoryEntry[] = [];
-		const visits = new Map<string, number>([[current.id, 1]]);
-		let unchangedSteps = 0;
-
-		// The recording is finished here, while the browser is still open.
-		const ended = async (outcome: FlowOutcome, reason: string): Promise<Trajectory> => {
-			const isKept = steps.length > 1 || VERDICT_OUTCOMES.includes(outcome);
-			const video = isKept
-				? await recording.finish({ media: ctx.media, site: ctx.siteId, flowId })
-				: undefined;
-			return { steps, outcome, reason, video };
-		};
-
-		for (let stepNumber = 1; stepNumber <= MAX_STEPS_PER_GOAL; stepNumber++) {
-			await ctx.throwIfStopped();
-			const startedAt = performance.now();
-			const action = await decideNextAction(goal.goal, page, history);
-			const decidedIn = ((performance.now() - startedAt) / 1000).toFixed(1);
-			console.log(
-				`    #${goalNumber} step ${stepNumber}: ${describeAction(action)} (${decidedIn} s) ${action.thought}`
-			);
-			if (action.action === 'done') return await ended('done', action.reason);
-			if (action.action === 'give_up') return await ended('gave_up', action.reason);
-
-			const aimsAtPoint = action.action === 'click' || action.action === 'type';
-			let control: ProbedControl | undefined;
-			if (aimsAtPoint) {
-				const point = resolveTarget(action.target);
-				control = await page.evaluate(({ x, y }) => window.pageInspector!.probeAt(x, y), point);
-				const refusal = refusalReason(control, action.element, ctx.site.host);
-				if (refusal !== undefined) return await ended('blocked', refusal);
-			}
-
-			const urlBefore = page.url();
-			const hashBefore = await dHash(await viewportScreenshot(page));
-			await page.evaluate(() => window.pageInspector!.snapshotVisible());
-			const textBefore = await page.evaluate(() => document.body.innerText);
-			const refusal = await carryOut(page, action, recording);
-			if (refusal !== undefined) return await ended('blocked', refusal);
-			await settle(page);
-
-			const destination = normalizeUrl(page.url());
-			if (destination === undefined || !isSameSite(destination, ctx.site.host)) {
-				return await ended(
-					'blocked',
-					`"${describeAction(action)}" led away from the site, to ${page.url()}`
-				);
-			}
-
-			const urlChanged = urlKey(destination) !== urlKey(urlBefore);
-			if (urlChanged) {
-				await acceptCookieBanner(page, { waitForBanner: false });
-				await stabilizeLoadedPage(page);
-				await recording.restorePointer();
-			}
-			const hashAfter = await dHash(await viewportScreenshot(page));
-			const viewChanged = hammingDistance(hashBefore, hashAfter) >= SMALL_VIEW_CHANGE;
-
-			// Scrolling and waiting do not change what the page is, unless a redirect moved it.
-			const mayHaveChangedScreen = urlChanged || aimsAtPoint;
-			const reached = mayHaveChangedScreen
-				? await screenIndex.observe(ctx, page, current, textBefore)
-				: current;
-			const movedToAnotherScreen = reached.id !== current.id;
-			if (movedToAnotherScreen) {
-				const actionId = await recordAction(ctx, current, reached, action, control);
-				steps.push({ screen: reached.id, action: actionId, thought: action.thought });
-				recording.markStep();
-				visits.set(reached.id, (visits.get(reached.id) ?? 0) + 1);
-				current = reached;
-			}
-
-			const result = urlChanged
-				? `now at ${displayPath(destination)}`
-				: movedToAnotherScreen || viewChanged
-					? 'the page changed'
-					: 'nothing changed';
-			history.push({ action: describeAction(action), result });
-			unchangedSteps = result === 'nothing changed' ? unchangedSteps + 1 : 0;
-
-			if (unchangedSteps >= STUCK_AFTER_UNCHANGED_STEPS) {
-				return await ended(
-					'stuck',
-					`${unchangedSteps} actions in a row changed nothing on the page`
-				);
-			}
-			if ((visits.get(current.id) ?? 0) >= STUCK_AFTER_VISITS) {
-				return await ended('stuck', `it kept coming back to ${displayPath(current.url)}`);
-			}
-		}
-		return await ended(
-			'step_limit',
-			`${MAX_STEPS_PER_GOAL} steps were not enough to reach the goal, so the attempt was cut off`
-		);
-	} finally {
-		await closeBrowser(context);
-	}
-}
-
-/** Stores the edge from one screen to the next, or finds the one an earlier trajectory made. */
-async function recordAction(
-	ctx: CrawlContext,
-	from: KnownScreen,
-	to: KnownScreen,
-	action: AgentAction,
-	control: ProbedControl | undefined
-): Promise<RecordId> {
-	const label = control?.name || ('element' in action ? action.element : describeAction(action));
-	const [existing] = await ctx.db
-		.query(
-			'SELECT VALUE id FROM action WHERE in = $from AND out = $to AND crawl = $crawl AND label = $label LIMIT 1',
-			{
-				from: new RecordId('screen', from.id),
-				to: new RecordId('screen', to.id),
-				crawl: ctx.job.id,
-				label
-			}
-		)
-		.collect<[RecordId[]]>();
-	if (existing.length > 0) return existing[0];
-	return ctx.createAction(
-		from.id,
-		to.id,
-		to.kind === 'page' ? 'navigate' : 'click',
-		label,
-		control?.region ?? 'other',
-		control?.rect as Rect | undefined
-	);
-}
-
-// --- running a crawl's goals -------------------------------------------------------------------
 
 export interface TrajectoryReport {
 	goal: string;
@@ -406,6 +75,8 @@ export interface TrajectoryReport {
 export interface ExplorationSummary {
 	plannedGoals: number;
 	distinctGoals: number;
+	/** The sign-up or login that was needed before the goals, when there was one. */
+	login?: TrajectoryReport;
 	trajectories: TrajectoryReport[];
 	seconds: number;
 }
@@ -418,10 +89,9 @@ async function attemptGoal(
 	browser: Browser,
 	ctx: CrawlContext,
 	screenIndex: ScreenIndex,
-	goal: PlannedGoal,
-	startPage: MappedPage,
-	goalNumber: number
-): Promise<TrajectoryReport> {
+	request: Omit<TrajectoryRequest, 'flowId'>
+): Promise<{ report: TrajectoryReport; trajectory?: Trajectory }> {
+	const { goal, goalNumber } = request;
 	const report: TrajectoryReport = {
 		goal: goal.goal,
 		category: goal.category,
@@ -431,16 +101,9 @@ async function attemptGoal(
 	};
 	const startedAt = performance.now();
 	const flowId = newId();
+	let trajectory: Trajectory | undefined;
 	try {
-		const trajectory = await runTrajectory(
-			browser,
-			ctx,
-			screenIndex,
-			goal,
-			startPage,
-			flowId,
-			goalNumber
-		);
+		trajectory = await runTrajectory(browser, ctx, screenIndex, { ...request, flowId });
 		report.outcome = trajectory.outcome;
 		report.reason = trajectory.reason;
 		report.steps = trajectory.steps.length - 1;
@@ -460,8 +123,149 @@ async function attemptGoal(
 		console.warn(`    #${goalNumber} failed: ${report.reason}`);
 	}
 	report.seconds = (performance.now() - startedAt) / 1000;
-	return report;
+	return { report, trajectory };
 }
+
+// --- the demo account ---------------------------------------------------------------------------
+
+/** What `establishLogin` leaves behind for the rest of the run. */
+interface LoginResult {
+	/** The account to use for goals, or undefined when the site has none that works. */
+	account?: Account;
+	/** The pages the model can plan from behind the login. */
+	signedInPages: MappedPage[];
+	report?: TrajectoryReport;
+}
+
+/**
+ * Makes sure the site has a demo account that is logged in, and returns what the run can use of
+ * it. A saved login is tried first. When it has expired the model logs in again with the stored
+ * password, and when the site has no working account it signs up for one, with a new plus address
+ * if an earlier attempt was refused. The model does the forms, the crawler reads the
+ * verification email, and the browser's login is saved when the run got in.
+ */
+async function establishLogin(
+	browser: Browser,
+	ctx: CrawlContext,
+	screenIndex: ScreenIndex,
+	pages: MappedPage[],
+	existing: Account | undefined
+): Promise<LoginResult> {
+	if (!mailIsConfigured()) {
+		console.warn(`[${ctx.siteId}] REFS_MAIL_ADDRESS is not set, so no account is created`);
+		return { signedInPages: [] };
+	}
+
+	/**
+	 * Opens the site with the saved login and captures what it shows as the first page behind
+	 * the login. Says whether the login still works.
+	 */
+	async function visitWithSavedLogin(account: Account): Promise<string | undefined> {
+		const { context } = await openContext(browser, ctx.job.viewport, {
+			storageState: account.storage_state
+		});
+		try {
+			const page = await context.newPage();
+			await loadPage(page, ctx.site.url, { waitForBanner: true });
+			if (!(await looksSignedIn(page))) return undefined;
+			return (await screenIndex.observe(ctx, page, undefined, '', true)).id;
+		} finally {
+			await closeBrowser(context);
+		}
+	}
+
+	let account = existing;
+	let landing: string | undefined;
+	if (account?.status === 'active' && account.storage_state !== undefined) {
+		landing = await visitWithSavedLogin(account);
+		if (landing !== undefined) {
+			return await withSignedInPages(ctx, [landing], account);
+		}
+		console.log(`[${ctx.siteId}] the saved login has expired, logging in again`);
+	}
+
+	// Without a working account the site gets a new one. An account whose login merely expired
+	// keeps its address and password, which the model types into the login form.
+	const loggingInAgain = account?.status === 'active';
+	if (!loggingInAgain) account = await startAccount(ctx.db, ctx.siteId, account);
+	const goalText = loggingInAgain
+		? 'Log in to the existing account and stop once you are signed in'
+		: 'Sign up for an account and stop once you are signed in';
+	const preferredType = loggingInAgain ? 'login' : 'signup';
+	const startPage =
+		pages.find((page) => page.pageType === preferredType) ??
+		pages.find((page) => page.pageType === 'login' || page.pageType === 'signup') ??
+		[...pages].sort((first, second) => first.depth - second.depth)[0];
+	const goal: PlannedGoal = {
+		goal: goalText,
+		category: loggingInAgain ? 'logging_in' : 'signing_up',
+		startPath: startPage.path,
+		success: 'The page shows the product as a signed-in user sees it.',
+		actions: 4,
+		signedIn: false,
+		embedding: []
+	};
+	await ctx.setActivity(loggingInAgain ? 'Logging in to the demo account' : 'Signing up');
+	const { report, trajectory } = await attemptGoal(browser, ctx, screenIndex, {
+		goal,
+		startPage,
+		goalNumber: 0,
+		slot: 0,
+		account: account!,
+		startSignedIn: false,
+		establishesLogin: true
+	});
+	if (report.outcome === 'error') {
+		// The run itself broke (a crashed page, the model service), which says nothing about the site.
+		return { signedInPages: [], report };
+	}
+	if (trajectory?.storageState === undefined) {
+		await failAccount(ctx.db, ctx.siteId, report.reason ?? 'the sign-up did not finish');
+		return { signedInPages: [], report };
+	}
+	await saveLogin(ctx.db, ctx.siteId, trajectory.storageState);
+	const activeAccount = (await loadAccount(ctx.db, ctx.siteId))!;
+	// What the saved login shows at the site's address is a page behind the login too, unless the
+	// site shows its marketing page to signed-in users as well.
+	landing = await visitWithSavedLogin(activeAccount);
+	const seeds = [...trajectory.signedInScreens, ...(landing === undefined ? [] : [landing])];
+	return { ...(await withSignedInPages(ctx, seeds, activeAccount)), report };
+}
+
+/** Describes the screens captured behind the login, so the model can plan from them. */
+async function withSignedInPages(
+	ctx: CrawlContext,
+	screens: string[],
+	account: Account
+): Promise<LoginResult> {
+	// The new screens have no page type or description yet; planning needs both.
+	await enrichCrawl(ctx.db, ctx.job.id);
+	const signedInPages = await loadMappedPages(ctx.db, ctx.job.id, undefined, screens);
+	return { account, signedInPages };
+}
+
+/** Plans the visitor's goals and the goals behind the login, and merges them into one list. */
+async function planAndMerge(
+	ctx: CrawlContext,
+	pages: MappedPage[],
+	login: LoginResult,
+	concurrency: number
+): Promise<{ planned: number; goals: PlannedGoal[] }> {
+	const navLabels = await loadNavLabels(ctx.db, ctx.job.id);
+	const hasAccount = login.account !== undefined;
+	const visitorGoals = await planGoals(ctx, pages, navLabels, concurrency, {
+		hasAccount,
+		signedIn: false
+	});
+	const signedInGoals = await planGoals(ctx, login.signedInPages, navLabels, concurrency, {
+		hasAccount,
+		signedIn: true
+	});
+	const planned = [...visitorGoals, ...signedInGoals];
+	return { planned: planned.length, goals: await mergeGoals(planned, concurrency) };
+}
+
+// --- running a crawl's goals -------------------------------------------------------------------
 
 /**
  * Plans goals for a finished, enriched crawl and tries them, at most `max_trajectories` of them
@@ -488,16 +292,22 @@ export async function exploreCrawl(
 
 	const pages = await loadMappedPages(db, crawlId, job.finished_at);
 	if (pages.length === 0) throw new Error(`Crawl ${String(crawlId.id)} has no pages to plan from.`);
-	await ctx.setActivity('Planning what a visitor could do');
 	const concurrency = options.concurrency ?? DEFAULT_CONCURRENCY;
-	const planned = await planGoals(ctx, pages, await loadNavLabels(db, crawlId), concurrency);
-	const goals = await mergeGoals(planned, concurrency);
-	console.log(`[${label}] ${planned.length} goals planned, ${goals.length} distinct`);
-	for (const goal of goals) console.log(`  [${goal.category}] ${goal.startPath}: ${goal.goal}`);
+	const existingAccount = await loadAccount(db, ctx.siteId);
+
 	if (options.planOnly) {
+		// Planning alone never signs up; it plans with the account the site already has.
+		await ctx.setActivity('Planning what a visitor could do');
+		const login: LoginResult = {
+			account: existingAccount?.status === 'active' ? existingAccount : undefined,
+			signedInPages: []
+		};
+		const { planned, goals } = await planAndMerge(ctx, pages, login, concurrency);
+		console.log(`[${label}] ${planned} goals planned, ${goals.length} distinct`);
+		for (const goal of goals) console.log(`  [${goal.category}] ${goal.startPath}: ${goal.goal}`);
 		await db.query('UPDATE $id SET activity = NONE', { id: crawlId }).collect();
 		return {
-			plannedGoals: planned.length,
+			plannedGoals: planned,
 			distinctGoals: goals.length,
 			trajectories: [],
 			seconds: (performance.now() - startedAt) / 1000
@@ -508,9 +318,10 @@ export async function exploreCrawl(
 		.query("DELETE flow WHERE crawl = $crawl AND source = 'goal'", { crawl: crawlId })
 		.collect();
 	const [known] = await db
-		.query('SELECT id, url, image_hash, dom_sig, depth, kind FROM screen WHERE crawl = $crawl', {
-			crawl: crawlId
-		})
+		.query(
+			'SELECT id, url, image_hash, dom_sig, depth, kind, signed_in FROM screen WHERE crawl = $crawl',
+			{ crawl: crawlId }
+		)
 		.collect<
 			[
 				{
@@ -520,6 +331,7 @@ export async function exploreCrawl(
 					dom_sig: string;
 					depth: number;
 					kind: 'page' | 'state';
+					signed_in?: boolean;
 				}[]
 			]
 		>();
@@ -530,56 +342,75 @@ export async function exploreCrawl(
 			imageHash: screen.image_hash,
 			domSig: screen.dom_sig,
 			depth: screen.depth,
-			kind: screen.kind
+			kind: screen.kind,
+			signedIn: screen.signed_in === true
 		}))
 	);
 
-	// Workers take the next goal off the shared queue.
-	const queue = [...goals];
-	const reports: TrajectoryReport[] = [];
-	const reached: PlannedGoal[] = [];
-	let started = 0;
-	async function work(): Promise<void> {
-		for (;;) {
-			const goal = queue.shift();
-			if (goal === undefined || started >= bound) return;
-			const alreadyReached = reached.find(
-				(earlier) =>
-					earlier.startPath === goal.startPath &&
-					cosineSimilarity(earlier.embedding, goal.embedding) >= COVERED_GOAL_SIMILARITY
-			);
-			if (alreadyReached !== undefined) {
-				console.log(`[${label}] skipped, covered by "${alreadyReached.goal}": ${goal.goal}`);
-				continue;
-			}
-			const page = pages.find((candidate) => candidate.path === goal.startPath);
-			if (page === undefined) continue;
-
-			started++;
-			console.log(
-				`[${label}] #${started}/${Math.min(bound, goals.length)} ${goal.goal} [${goal.category}] from ${goal.startPath}`
-			);
-			const report = await attemptGoal(browser, ctx, screenIndex, goal, page, started);
-			if (report.outcome === 'done') reached.push(goal);
-			reports.push(report);
-		}
-	}
 	// One browser for all goals, each in a context of its own. Launching a browser per goal made
 	// the second launch fail under Bun: Chrome exited a few seconds in and Playwright never noticed.
 	const browser = await launchBrowser();
 	try {
+		const login = await establishLogin(browser, ctx, screenIndex, pages, existingAccount);
+		await ctx.setActivity('Planning what a visitor could do');
+		const { planned, goals } = await planAndMerge(ctx, pages, login, concurrency);
+		console.log(`[${label}] ${planned} goals planned, ${goals.length} distinct`);
+		for (const goal of goals) console.log(`  [${goal.category}] ${goal.startPath}: ${goal.goal}`);
+
+		// Workers take the next goal off the shared queue.
+		const queue = [...goals];
+		const reports: TrajectoryReport[] = [];
+		const reached: PlannedGoal[] = [];
+		let started = 0;
+		async function work(slot: number): Promise<void> {
+			for (;;) {
+				const goal = queue.shift();
+				if (goal === undefined || started >= bound) return;
+				const alreadyReached = reached.find(
+					(earlier) =>
+						earlier.startPath === goal.startPath &&
+						cosineSimilarity(earlier.embedding, goal.embedding) >= COVERED_GOAL_SIMILARITY
+				);
+				if (alreadyReached !== undefined) {
+					console.log(`[${label}] skipped, covered by "${alreadyReached.goal}": ${goal.goal}`);
+					continue;
+				}
+				// Goals behind the login start on pages that were captured logged in.
+				const startPages = goal.signedIn ? [...login.signedInPages, ...pages] : pages;
+				const startPage = startPages.find((candidate) => candidate.path === goal.startPath);
+				if (startPage === undefined) continue;
+
+				started++;
+				console.log(
+					`[${label}] #${started}/${Math.min(bound, goals.length)} ${goal.goal} [${goal.category}] from ${goal.startPath}`
+				);
+				const { report } = await attemptGoal(browser, ctx, screenIndex, {
+					goal,
+					startPage,
+					goalNumber: started,
+					slot,
+					account: login.account,
+					startSignedIn: goal.signedIn,
+					establishesLogin: false
+				});
+				if (report.outcome === 'done') reached.push(goal);
+				reports.push(report);
+			}
+		}
 		await ctx.setActivity('Exploring toward goals');
-		await Promise.all(Array.from({ length: concurrency }, work));
+		await Promise.all(Array.from({ length: concurrency }, (_worker, slot) => work(slot)));
+		return {
+			plannedGoals: planned,
+			distinctGoals: goals.length,
+			login: login.report,
+			trajectories: reports,
+			seconds: (performance.now() - startedAt) / 1000
+		};
 	} finally {
 		await closeBrowser(browser);
+		await clearLiveGoals(db, crawlId);
 		await db.query('UPDATE $id SET activity = NONE', { id: crawlId }).collect();
 	}
-	return {
-		plannedGoals: planned.length,
-		distinctGoals: goals.length,
-		trajectories: reports,
-		seconds: (performance.now() - startedAt) / 1000
-	};
 }
 
 /** Stores a trajectory as a goal flow, and its recording as the flow's video. */
@@ -603,6 +434,7 @@ async function saveFlow(
 				goal: goal.goal,
 				outcome: trajectory.outcome,
 				outcome_reason: trajectory.reason,
+				signed_in: trajectory.signedIn ? true : undefined,
 				steps: trajectory.steps.map((step) => ({
 					screen: new RecordId('screen', step.screen),
 					action: step.action,

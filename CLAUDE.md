@@ -11,7 +11,7 @@ src/              SvelteKit 3 app (Svelte 5, Tailwind 4, adapter-node)
 src/lib/server/   surreal.ts (connection, schema, plain()), media.ts (storage), db.ts (app singletons), library.ts (queries the app and the MCP share), queries.ts (the app's own queries), mcp/ (the MCP server)
 src/lib/types.ts  plain shapes of the database records, shared by app and crawler
 src/env.ts        server env vars, declared with defineEnvVars
-crawler/          Playwright crawler run with bun: worker (job queue), cli, crawl loop, capture, in-page code, rules
+crawler/          Playwright crawler run with bun: worker (job queue), cli, crawl loop, capture, in-page code, rules, exploration (explore, trajectory, agent, goals), demo accounts (accounts, mail)
 db/schema.surql   the data contract, applied on every connect; must stay idempotent
 references/       Mobbin screenshots used as design references (images gitignored, README indexes them)
 data/             crawler output (gitignored)
@@ -59,7 +59,7 @@ Flows will be cut out of the action graph by structure first. A flow starts at a
 
 The library is also available to models through an MCP server at `/mcp`, hosted at `https://refs.neoworks.dev/mcp`. It is read-only, needs an API key (`bun run api-key create <name>`, stored as a SHA-256 hash in `api_key`), and has exactly two tools, because fewer tools are easier for a model to use well. `search` finds sites, pages, screens and elements, optionally scoped to one site and one page path. `get` returns everything about one screen or site. Results are inline preview images followed by one JSON block, modelled on Mobbin's MCP, without its telemetry parameters. Keep it to two tools; flows become a new `type` of `search`, not a new tool. Auth gets revisited before hosting.
 
-Crawls never log in. Refs only captures what a site shows to a visitor who isn't signed in, so there are no accounts, sessions or stored credentials.
+Exploration may sign up and log in, with one demo account per site (the `account` table, shared by both viewports). Its address is a plus address of the demo Gmail inbox (`REFS_MAIL_ADDRESS`, read over IMAP with `REFS_MAIL_APP_PASSWORD`), so the verification email of a sign-up lands in one place and says which site it was for. Its password is random. The model gets the email and password in its context and types them itself, plus a made-up name; payment details, phone numbers, other people's data, and "Continue with Google" style logins stay refused. The crawler opens verification links itself and hands codes to the model. After a login the browser's storage state is saved in `account.storage_state`, and goals that need the login start from it. Screens and goal flows captured while logged in carry `signed_in`, and the UI labels them. The structural crawl still captures only what a visitor sees. Passwords and storage state are plain text in the database, which has to change before hosting (#17).
 
 ## How we work
 

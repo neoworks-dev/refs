@@ -21,6 +21,7 @@ from .schemas import (
     ElementLabel,
     FlowNaming,
     FlowStepInput,
+    AgentIdentity,
     Goal,
     GoalPlan,
     HistoryStep,
@@ -222,8 +223,11 @@ MAX_SITE_MAP_PAGES = 40
 MAX_INTERACTIVE_PARTS = 30
 MAX_GOAL_CHARACTERS = 160
 MAX_SUCCESS_CHARACTERS = 200
-# Categories whose flows need an account or a payment, which a visitor-level crawl never has.
+# Without a demo account, categories whose flows need an account or a payment are left out.
 PLANNER_EXCLUDED_CATEGORIES = {"onboarding", "logging_in", "checkout", "settings"}
+# With one, only payment stays out. Signing up and logging in are done by one dedicated goal per
+# site that the crawler writes itself, so the planner does not repeat them.
+PLANNER_EXCLUDED_CATEGORIES_WITH_ACCOUNT = {"checkout", "signing_up", "logging_in"}
 
 
 async def plan_goals(
@@ -236,6 +240,8 @@ async def plan_goals(
     nav_labels: list[str],
     viewport: str,
     max_goals: int,
+    has_account: bool = False,
+    signed_in: bool = False,
 ) -> GoalPlan:
     """Has the model list what a visitor could want to do starting on one page of a mapped site.
 
@@ -243,8 +249,15 @@ async def plan_goals(
     and would only produce shallow goals. The goals are meant for the browser agent (`next_action`)
     to try in a fresh browser at `page.path`, and their category comes from the fixed list, so the
     crawler can store them without checking. Merging goals of different pages is the caller's job.
+
+    With `has_account` the agent can log in to the site with a demo account, so goals behind the
+    login are allowed and only payment, phone numbers and other real personal data are not.
+    `signed_in` says the screenshot shows the page as that account sees it. Goals that need the
+    login come back with `signed_in` set, so the crawler starts their browser logged in.
     """
-    categories = [category for category in FLOW_CATEGORIES if category not in PLANNER_EXCLUDED_CATEGORIES]
+    has_account = has_account or signed_in
+    excluded = PLANNER_EXCLUDED_CATEGORIES_WITH_ACCOUNT if has_account else PLANNER_EXCLUDED_CATEGORIES
+    categories = [category for category in FLOW_CATEGORIES if category not in excluded]
     data_uri, _ = image_to_data_uri(page_image, CLASSIFY_MAX_SIDE)
 
     # Property order is decoding order: the goal is worded first, then categorised, then described.
@@ -262,12 +275,13 @@ async def plan_goals(
                         # The model judges its own sentence right after writing it. A 4B model
                         # breaks the "no account" rule when it writes, but answers a plain
                         # yes/no about the sentence it just wrote far more reliably.
-                        "needs_account_or_personal_data": {"type": "boolean"},
+                        "needs_login": {"type": "boolean"},
+                        "needs_payment_or_private_data": {"type": "boolean"},
                         "actions_needed": {"type": "integer", "minimum": 1, "maximum": 10},
                         "category": {"type": "string", "enum": categories},
                         "success": {"type": "string", "maxLength": MAX_SUCCESS_CHARACTERS},
                     },
-                    "required": ["goal", "needs_account_or_personal_data", "actions_needed", "category", "success"],
+                    "required": ["goal", "needs_login", "needs_payment_or_private_data", "actions_needed", "category", "success"],
                     "additionalProperties": False,
                 },
             }
@@ -281,22 +295,50 @@ async def plan_goals(
     )
     parts = "\n".join(f"- {part}" for part in interactive_parts[:MAX_INTERACTIVE_PARTS])
     category_lines = "\n".join(f"- {category}: {FLOW_CATEGORY_DESCRIPTIONS[category]}" for category in categories)
+    users = "signed-in users" if signed_in else "visitors"
+    shown_as = " as a signed-in user sees it" if signed_in else ""
+    if has_account:
+        private_data_flag = (
+            "true when the goal needs payment details, a phone number, a postal address or other "
+            "real personal data. The demo account's email, password and a made-up name do not count."
+        )
+        account_rules = (
+            "- The browser agent has a demo account for this site and signs in with its email and "
+            "password, so goals behind the login are welcome. Never list signing up or logging in "
+            "themselves, signing in with Google or GitHub, paying, entering a phone number, "
+            "deleting anything, inviting other people or changing billing.\n"
+        )
+        if signed_in:
+            account_rules += (
+                "- This page is behind the login. Prefer goals that explore the product: open an "
+                "area of the navigation, switch a tab, open the profile or account menu or a "
+                "settings page, search or filter a list and open one item.\n"
+            )
+    else:
+        private_data_flag = "true when the goal needs a login, an account, a payment or typing personal data."
+        account_rules = (
+            "- Visitors who are not signed in cannot log in, so never list logging in, signing in with "
+            "Google or GitHub, or anything that needs an account, a payment or personal data. "
+            "Starting to sign up or to request a demo is fine when the goal ends where the form asks "
+            "for personal data, like 'start the free trial and stop at the first field that asks for "
+            "an email'.\n"
+        )
     prompt = (
-        f"You are listing what visitors of the website {site_name} ({host}) could want to do, so "
+        f"You are listing what {users} of the website {site_name} ({host}) could want to do, so "
         "that a browser agent can later try each one and record how it is done. The screenshot "
-        f"shows one page of the site on a {viewport} screen.\n\n"
+        f"shows one page of the site{shown_as} on a {viewport} screen.\n\n"
         f"This page: {page.path} [{page.page_type}] {page.title.strip()[:80]}\n"
         f"What it shows: {page.description.strip()}\n\n"
         f"Interactive parts found on it (menus, forms, fields, buttons):\n{parts or '(none found)'}\n\n"
         f"Main navigation of the site: {', '.join(nav_labels) if nav_labels else '(none found)'}\n\n"
         f"Other pages of the site:\n{site_map}\n\n"
-        f"List up to {max_goals} different things a visitor starting on THIS page could plausibly "
+        f"List up to {max_goals} different things a {users[:-1]} starting on THIS page could plausibly "
         "want to do, as many as this page really supports and fewer when it supports few. For each:\n"
         "- goal: one sentence in the visitor's own words, naming the concrete things on this "
         "site (a menu, a tab, a plan, a feature, a field) rather than a generic activity.\n"
         f"- category: what the goal is about. Allowed categories:\n{category_lines}\n"
-        "- needs_account_or_personal_data: true when the goal needs a login, an account, a payment "
-        "or typing personal data.\n"
+        "- needs_login: true when the goal can only be done signed in to an account.\n"
+        f"- needs_payment_or_private_data: {private_data_flag}\n"
         "- actions_needed: how many clicks, typed entries or scrolls the goal takes at least.\n"
         "- success: what the screen shows once the goal is reached.\n\n"
         "Rules:\n"
@@ -305,11 +347,7 @@ async def plan_goals(
         "open a result, open one item out of many and read it, or go through a multi-step form "
         "up to the point where it asks for personal data. A goal that only follows one "
         "link of the navigation, like 'open the pricing page', is allowed but comes last.\n"
-        "- Visitors who are not signed in cannot log in, so never list logging in, signing in with "
-        "Google or GitHub, or anything that needs an account, a payment or personal data. "
-        "Starting to sign up or to request a demo is fine when the goal ends where the form asks "
-        "for personal data, like 'start the free trial and stop at the first field that asks for "
-        "an email'.\n"
+        f"{account_rules}"
         "- A goal must need at least one action on this page. Do not list something the page "
         "already shows, like 'view the list of customers' on the customers page.\n"
         "- The goals must differ from each other. Do not list the same thing in other words.\n"
@@ -334,9 +372,10 @@ async def plan_goals(
                 category=goal["category"],
                 success=goal["success"],
                 actions=goal["actions_needed"],
+                signed_in=signed_in or goal["needs_login"],
             )
             for goal in plan["goals"]
-            if not goal["needs_account_or_personal_data"]
+            if not goal["needs_payment_or_private_data"] and (has_account or not goal["needs_login"])
         ]
     )
 
@@ -419,8 +458,44 @@ Actions you can take, one per step:
 - scroll: scroll the page up or down.
 - back: go back to the previous page.
 - wait: wait for the page to finish loading or animating.
-- done: the goal has been reached, with a reason saying what you found.
-- give_up: the goal cannot be reached without logging in, paying or leaving the site."""
+- done: the goal has been reached, with a reason saying what you found."""
+
+GIVE_UP_PROMPT = "- give_up: the goal cannot be reached without logging in, paying or leaving the site."
+# With a demo account logging in is possible, and so is what the site asks for during sign-up.
+GIVE_UP_WITH_ACCOUNT_PROMPT = (
+    "- give_up: the goal cannot be reached without paying, a phone number, solving a CAPTCHA or "
+    "leaving the site."
+)
+
+NO_ACCOUNT_RULE = "- Never log in, pay, or submit personal data.\n"
+
+
+def account_rules(identity: AgentIdentity) -> str:
+    """The rules and credentials of a goal on a site that has a demo account."""
+    code = (
+        f"- A verification email arrived. Its code is {identity.verification_code}. If the page "
+        "asks for a code, type this one.\n"
+        if identity.verification_code
+        else ""
+    )
+    return (
+        "- This site has a demo account. Use it wherever the goal needs an account: sign up with "
+        "it when the goal says to create one, and log in with it when the page asks you to. Where "
+        "an email or a password is asked, type exactly these:\n"
+        f"  email: {identity.email}\n  password: {identity.password}\n"
+        f"  name: {identity.name} (any made-up name is fine where a name is asked)\n"
+        "  Where a username is asked, make one up from the name, with letters and digits only, no @.\n"
+        "- The type action clicks the field itself, so do not click a field before typing into it.\n"
+        "- Sign up and log in with email and password only. Never use 'Continue with Google', "
+        "GitHub, Apple, single sign-on or a passkey.\n"
+        "- Never enter payment details, a phone number, a postal address or any other real "
+        "personal data. If a step needs them, call give_up and say what it asked for.\n"
+        "- If a CAPTCHA appears, do not touch it. Call give_up and say that a CAPTCHA blocks the goal.\n"
+        "- If the page says an email was sent and asks you to confirm, wait: the crawler reads the "
+        "inbox itself and tells you the code or opens the link.\n"
+        "- Never delete anything, invite other people or change billing.\n"
+        f"{code}"
+    )
 
 
 async def next_action(
@@ -429,8 +504,12 @@ async def next_action(
     url: str,
     aria_snapshot: str,
     history: list[HistoryStep],
+    identity: AgentIdentity | None = None,
 ) -> dict:
     """Asks the agent model for its next browser action.
+
+    With an `identity` the site has a demo account, and the model gets its email, password and
+    name to fill sign-up and login forms with. Without one it never logs in.
 
     The result is the action as a dictionary with an `action` key. For clicks and typing it also
     carries `x` and `y` in pixels of the screenshot as it was sent in, not of the shrunk copy
@@ -461,12 +540,12 @@ async def next_action(
         f"Steps so far:\n{steps or '(none yet)'}\n\n"
         "Page structure (accessibility tree, may be cut off):\n"
         f"{aria_snapshot[:MAX_ARIA_SNAPSHOT_CHARACTERS]}\n\n"
-        f"{AGENT_ACTIONS_PROMPT}\n\n"
+        f"{AGENT_ACTIONS_PROMPT}\n{GIVE_UP_WITH_ACCOUNT_PROMPT if identity else GIVE_UP_PROMPT}\n\n"
         "Choose the single next action. Rules:\n"
         "- Only click what is visible in the screenshot. If the element you need is not "
         "visible, scroll to it first; the page structure may list elements that are off screen.\n"
         "- Call done as soon as the screenshot shows what the goal asks for, and do not undo it.\n"
-        "- Never log in, pay, or submit personal data.\n"
+        f"{account_rules(identity) if identity else NO_ACCOUNT_RULE}"
         f"{repetition_warning}"
         f"{dead_actions_warning}"
     )

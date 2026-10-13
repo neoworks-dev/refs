@@ -8,10 +8,12 @@ import type { ProbedControl } from './page.ts';
 import type { FlowRecording } from './recording.ts';
 import {
 	isDestructive,
-	isPersonalDataField,
 	isSameSite,
-	looksLikePersonalData,
-	normalizeUrl
+	isThirdPartyLogin,
+	normalizeUrl,
+	typedFieldRefusal,
+	typedTextRefusal,
+	type DemoIdentity
 } from './rules.ts';
 
 /** A scroll of this share of the viewport shows new content and keeps some of the old for orientation. */
@@ -44,6 +46,8 @@ export type AgentAction = { thought: string } & (
 	| { action: 'scroll'; direction: 'up' | 'down' }
 	| { action: 'back' }
 	| { action: 'wait' }
+	/** Not chosen by the model: the crawler opens the link of a verification email itself. */
+	| { action: 'open_link'; url: string }
 	| { action: 'done'; reason: string }
 	| { action: 'give_up'; reason: string }
 );
@@ -51,6 +55,17 @@ export type AgentAction = { thought: string } & (
 export interface HistoryEntry {
 	action: string;
 	result: string;
+}
+
+/** What the model knows about the demo account of a site while it works on a goal. */
+export interface AgentIdentity extends DemoIdentity {
+	/** A one-time code from the verification email, once it arrived, for the model to type. */
+	verificationCode?: string;
+}
+
+/** The password is replaced in text that is logged or stored, though the model itself needs it. */
+function hidePassword(text: string, identity: AgentIdentity | undefined): string {
+	return identity === undefined ? text : text.replaceAll(identity.password, '<password>');
 }
 
 /**
@@ -61,7 +76,8 @@ export interface HistoryEntry {
 export async function decideNextAction(
 	goal: string,
 	page: Page,
-	history: HistoryEntry[]
+	history: HistoryEntry[],
+	identity?: AgentIdentity
 ): Promise<AgentAction> {
 	const form = new FormData();
 	const screenshot = await page.screenshot({ type: 'jpeg', quality: AGENT_SCREENSHOT_QUALITY });
@@ -74,8 +90,19 @@ export async function decideNextAction(
 	form.set('url', page.url());
 	form.set('aria_snapshot', await page.ariaSnapshot());
 	form.set('history', JSON.stringify(history));
+	if (identity !== undefined) {
+		form.set(
+			'identity',
+			JSON.stringify({
+				email: identity.email,
+				password: identity.password,
+				name: identity.name,
+				verification_code: identity.verificationCode
+			})
+		);
+	}
 	const answer = await callModel<{
-		action: AgentAction['action'];
+		action: Exclude<AgentAction['action'], 'open_link'>;
 		thought: string;
 		element?: string;
 		x?: number;
@@ -86,7 +113,7 @@ export async function decideNextAction(
 		reason?: string;
 	}>('/next-action', form);
 
-	const { thought } = answer;
+	const thought = hidePassword(answer.thought, identity);
 	// The screenshot has device pixels, the page works in CSS pixels.
 	const target: ActionTarget = {
 		kind: 'point',
@@ -119,15 +146,17 @@ export function resolveTarget(target: ActionTarget): PagePoint {
 	return target.point;
 }
 
-/** One line of history for the model, like `click 'Pricing link'`. */
-export function describeAction(action: AgentAction): string {
+/** One line of history for the model, like `click 'Pricing link'`. The password is left out. */
+export function describeAction(action: AgentAction, identity?: AgentIdentity): string {
 	switch (action.action) {
 		case 'click':
 			return `click '${action.element}'`;
 		case 'type':
-			return `type '${action.text}' into '${action.element}'`;
+			return `type '${hidePassword(action.text, identity)}' into '${action.element}'`;
 		case 'scroll':
 			return `scroll ${action.direction}`;
+		case 'open_link':
+			return 'open the verification link from the email';
 		default:
 			return action.action;
 	}
@@ -137,14 +166,22 @@ export function describeAction(action: AgentAction): string {
  * Why an action must not be carried out, or undefined when it may be. The crawler only looks: it
  * never presses a control that changes something, never leaves the site, and never types personal
  * data. Both a link's target and the control's name are checked, because a button may navigate.
+ * With a demo identity, submitting a sign-up or login form is allowed, but logging in through
+ * another service is not, because the account is an email and a password.
  */
 export function refusalReason(
 	control: ProbedControl | undefined,
 	described: string,
-	siteHost: string
+	siteHost: string,
+	identity?: AgentIdentity
 ): string | undefined {
 	const name = control?.name || described;
-	if (isDestructive(name)) return `"${name}" would change something, and the crawler only looks`;
+	if (isDestructive(name, { hasDemoAccount: identity !== undefined })) {
+		return `"${name}" would change something, and the crawler only looks`;
+	}
+	if (isThirdPartyLogin(name)) {
+		return `"${name}" logs in through another service, and the demo account has an email and a password`;
+	}
 	if (control?.href !== undefined) {
 		const destination = normalizeUrl(control.href);
 		if (destination === undefined || !isSameSite(destination, siteHost)) {
@@ -159,27 +196,27 @@ export function refusalReason(
 
 /**
  * Carries out an action in the browser. Returns why it refused to when typing would enter
- * personal data, which can only be known once the click has put the focus in the field.
+ * personal data other than the demo identity, which can only be known once the click has put the
+ * focus in the field.
  */
 export async function carryOut(
 	page: Page,
 	action: AgentAction,
-	recording: FlowRecording
+	recording: FlowRecording,
+	identity?: AgentIdentity
 ): Promise<string | undefined> {
 	switch (action.action) {
 		case 'click':
 			await recording.click(resolveTarget(action.target));
 			return undefined;
 		case 'type': {
-			if (looksLikePersonalData(action.text)) {
-				return `the model wanted to type "${action.text}", which is personal data`;
-			}
+			const textRefusal = typedTextRefusal(action.text, identity);
+			if (textRefusal !== undefined) return hidePassword(textRefusal, identity);
 			await recording.click(resolveTarget(action.target));
 			const field = await page.evaluate(() => window.pageInspector!.focusedField());
 			if (field === undefined) return `there is no text field at "${action.element}" to type into`;
-			if (isPersonalDataField(field)) {
-				return `"${action.element}" asks for personal data (${field.type} field "${field.text}")`;
-			}
+			const fieldRefusal = typedFieldRefusal(field, action.text, identity);
+			if (fieldRefusal !== undefined) return `"${action.element}" ${fieldRefusal}`;
 			// The text replaces what the field holds; typing after earlier text garbled searches.
 			await page.keyboard.press('ControlOrMeta+A');
 			await page.keyboard.type(action.text);
@@ -194,6 +231,9 @@ export async function carryOut(
 		}
 		case 'back':
 			await page.goBack();
+			return undefined;
+		case 'open_link':
+			await page.goto(action.url, { waitUntil: 'domcontentloaded' });
 			return undefined;
 		default:
 			// 'wait' needs nothing but the settling every action gets; done and give_up never get here.

@@ -108,6 +108,9 @@ class Goal(BaseModel):
     # How many actions the model thinks the goal takes at least. The crawler tries the longer
     # goals first, because a goal that follows one navigation link was already captured.
     actions: int
+    # The goal can only be done signed in to the site's demo account, so the crawler runs it in a
+    # browser that starts logged in. Always true for goals planned from a signed-in page.
+    signed_in: bool = False
 
 
 class GoalPlan(BaseModel):
@@ -123,6 +126,16 @@ class Embedding(BaseModel):
     model: str
     dimensions: int
     vector: list[float]
+
+
+class AgentIdentity(BaseModel):
+    """The demo account of the site the agent works on, which it may type into sign-up and login forms."""
+
+    email: str
+    password: str
+    name: str
+    # Set once the verification email arrived and the page may ask for the code.
+    verification_code: str | None = None
 
 
 class HistoryStep(BaseModel):

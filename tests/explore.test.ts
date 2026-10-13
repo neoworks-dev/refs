@@ -18,6 +18,7 @@ function goal(
 		startPath: options.startPath ?? '/',
 		success: '',
 		actions: options.actions ?? 2,
+		signedIn: false,
 		embedding: [Math.cos(radians), Math.sin(radians)]
 	};
 }
@@ -77,5 +78,20 @@ describe('refusing actions', () => {
 
 	test('an ordinary control is allowed', () => {
 		expect(refusalReason({ name: 'Pricing', region: 'nav', rect }, '', host)).toBeUndefined();
+	});
+
+	test('submitting a form is allowed for a demo account, never for a visitor', () => {
+		const identity = { email: 'demo+acme@gmail.com', password: 'secret', name: 'Alex' };
+		const submit = { name: 'Confirm password', region: 'main' as const, rect };
+
+		expect(refusalReason(submit, '', host)).toContain('Confirm password');
+		expect(refusalReason(submit, '', host, identity)).toBeUndefined();
+		expect(refusalReason({ ...submit, name: 'Pay now' }, '', host, identity)).toContain('Pay now');
+	});
+
+	test('logging in through another service is refused', () => {
+		const google = { name: 'Continue with Google', region: 'main' as const, rect };
+
+		expect(refusalReason(google, '', host)).toContain('another service');
 	});
 });

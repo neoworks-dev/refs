@@ -14,6 +14,7 @@ from fastapi.responses import JSONResponse
 from . import embeddings, settings, vlm
 from .schemas import (
     ELEMENT_LABELS,
+    AgentIdentity,
     BackAction,
     ClickAction,
     DoneAction,
@@ -97,6 +98,12 @@ async def plan_goals(
     nav_labels: Annotated[str, Form(description="JSON list of the main navigation labels")] = "[]",
     viewport: Annotated[str, Form(description="desktop or mobile")] = "desktop",
     max_goals: Annotated[int, Form(ge=1, le=8)] = 5,
+    has_account: Annotated[
+        bool, Form(description="The site has a demo account the browser agent can log in with")
+    ] = False,
+    signed_in: Annotated[
+        bool, Form(description="The screenshot shows the page as a signed-in user sees it")
+    ] = False,
 ) -> GoalPlan:
     page = PageSummary(path=path, page_type=page_type, title=title, description=description)
     return await vlm.plan_goals(
@@ -109,6 +116,8 @@ async def plan_goals(
         json.loads(nav_labels),
         viewport,
         max_goals,
+        has_account,
+        signed_in,
     )
 
 
@@ -149,9 +158,19 @@ async def next_action(
     history: Annotated[
         str, Form(description='JSON list of {"action": str, "result": str}')
     ] = "[]",
+    identity: Annotated[
+        str | None,
+        Form(
+            description='JSON {"email", "password", "name", "verification_code"} of the site\'s demo '
+            "account. Without it the agent never logs in or enters personal data."
+        ),
+    ] = None,
 ) -> NextAction:
     steps = [HistoryStep.model_validate(step) for step in json.loads(history)]
-    action = await vlm.next_action(goal, await screenshot.read(), url, aria_snapshot, steps)
+    demo_identity = AgentIdentity.model_validate_json(identity) if identity else None
+    action = await vlm.next_action(
+        goal, await screenshot.read(), url, aria_snapshot, steps, demo_identity
+    )
     action_models = {
         "click": ClickAction, "type": TypeAction, "scroll": ScrollAction, "back": BackAction,
         "wait": WaitAction, "done": DoneAction, "give_up": GiveUpAction,

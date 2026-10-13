@@ -132,11 +132,13 @@ export async function launchBrowser(): Promise<Browser> {
 
 /**
  * A fresh context in a running browser, with its own cookies, as a visitor on a new device would
- * have. Goal-directed exploration opens one per goal in a single browser.
+ * have. Goal-directed exploration opens one per goal in a single browser. A site's demo account
+ * is logged in by passing the `storageState` JSON that was saved after its login.
  */
 export async function openContext(
 	browser: Browser,
-	viewport: Viewport
+	viewport: Viewport,
+	options: { storageState?: string } = {}
 ): Promise<{ context: BrowserContext; userAgent: string }> {
 	const chromeMajorVersion = browser.version().split('.')[0];
 
@@ -158,7 +160,11 @@ export async function openContext(
 	}
 
 	// Service workers would bypass the request blocking below.
-	const context = await browser.newContext({ ...contextOptions, serviceWorkers: 'block' });
+	const context = await browser.newContext({
+		...contextOptions,
+		serviceWorkers: 'block',
+		storageState: options.storageState === undefined ? undefined : JSON.parse(options.storageState)
+	});
 	context.setDefaultTimeout(PAGE_TIMEOUT_MS);
 	await context.addInitScript({ content: await pageInspectorScript() });
 	await context.route('**/*', (route) => {
@@ -477,6 +483,8 @@ export interface CaptureRequest {
 	/** For states: the elements of the page underneath, and what the click revealed. */
 	baseline?: FoundElement[];
 	newPanels?: NewPanel[];
+	/** The browser is logged in to the site's demo account, so the screen is marked as such. */
+	signedIn?: boolean;
 }
 
 export interface CapturedScreen {
@@ -552,7 +560,8 @@ export async function captureScreen(request: CaptureRequest): Promise<CapturedSc
 				full_height: fullHeight,
 				media,
 				dom_sig: request.domSig,
-				image_hash: imageHash
+				image_hash: imageHash,
+				signed_in: request.signedIn ? true : undefined
 			}
 		})
 		.collect();

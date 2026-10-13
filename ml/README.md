@@ -104,23 +104,34 @@ crawler calls it once per page, so a site's goals are many and specific, and mer
 itself (`crawler/explore.ts`). Fields: `image` (the page's screenshot), `site_name`, `host`, `path`
 (the page every returned goal starts at), `page_type`, `title`, `description`, `interactive_parts`
 (JSON list of strings like `"form: Subscribe"`), `site_pages` (JSON list of `{"path", "page_type",
-"title"}` for the whole site), `nav_labels` (JSON list), `viewport` and `max_goals` (1 to 8, default 5).
+"title"}` for the whole site), `nav_labels` (JSON list), `viewport`, `max_goals` (1 to 8, default 5),
+`has_account` (the site has a demo account the browser agent logs in with, default false) and
+`signed_in` (the screenshot shows the page behind the login, default false).
 
 ```json
 { "goals": [{ "goal": "Switch the pricing table to yearly billing and compare the two cheapest plans",
               "category": "pricing_and_plans", "start_path": "/pricing",
-              "success": "The table shows yearly prices for the Free and Pro plans", "actions": 3 }] }
+              "success": "The table shows yearly prices for the Free and Pro plans", "actions": 3,
+              "signed_in": false }] }
 ```
 
 `category` is one of `FLOW_CATEGORIES`, minus the ones that need an account or a payment
-(`onboarding`, `logging_in`, `checkout`, `settings`). `actions` is how many actions the model
-thinks the goal takes at least; the crawler tries the longer goals first. The list can be empty.
+(`onboarding`, `logging_in`, `checkout`, `settings`). With `has_account` only `checkout` stays out,
+plus `signing_up` and `logging_in`, because the crawler writes the sign-up and login goal of a
+site itself. `actions` is how many actions the model thinks the goal takes at least; the crawler
+tries the longer goals first. `signed_in` is true for goals planned from a signed-in page and for
+goals the model marks `needs_login`; the crawler starts those with the saved login. The list can
+be empty.
 
 The prompt (`plan_goals` in `refs_ml/vlm.py`) gives the page's screenshot, type, title and
 description, the interactive parts found on it, the navigation labels and a one-line map of the
 other pages. It asks for goals in a visitor's own words that name the real menu, tab or plan, that
 need an action on this page, that take several actions, that stay out of anything needing an
-account, and that differ from each other.
+account, and that differ from each other. With `has_account` the account rule changes: goals
+behind the login are welcome, and only payment details, phone numbers, other real personal data,
+deleting, inviting people and billing are ruled out. With `signed_in` the prompt also says the
+page is behind the login and asks for goals that explore the product: a navigation area, a tab,
+the account menu, a list and one item of it.
 
 How it got there, with Holo3.1-4B, judged by reading the goals of resend.com and linear.app:
 
@@ -129,9 +140,11 @@ How it got there, with Holo3.1-4B, judged by reading the goals of resend.com and
 - Asked politely, the model still listed "Log in with Google" and "Enter a password" when the
   page was a login or signup page. So the crawler does not plan from such pages (it still plans
   from the home page, where "start signing up and stop at the first field that asks for an email"
-  is a fine goal), and every goal carries a `needs_account_or_personal_data` flag that the model
-  fills in right after writing it. A 4B model breaks the rule while writing but judges the finished
-  sentence far more reliably, so goals flagged true are dropped.
+  is a fine goal), and every goal carries two flags that the model fills in right after writing
+  it: `needs_login` and `needs_payment_or_private_data`. A 4B model breaks the rule while writing
+  but judges the finished sentence far more reliably. Goals flagged for payment or private data
+  are dropped, and so are goals flagged for a login when the site has no demo account. (The flag
+  used to be one, `needs_account_or_personal_data`, from before there were accounts.)
 - Examples in the prompt were copied word for word, so the prompt describes the level of detail
   instead of showing it.
 - The model does not reliably follow "at least two actions" or "do not list what the page already
@@ -154,8 +167,16 @@ is the cosine similarity. Use the same `dimensions` for everything you compare.
 ### `POST /next-action`
 
 One step of the browser agent. Fields: `goal`, `screenshot` (file), `url`, `aria_snapshot`
-(Playwright's `ariaSnapshot()`, optional), `history` (JSON list of `{"action", "result"}`, optional).
-Returns one action. Every action has a `thought`.
+(Playwright's `ariaSnapshot()`, optional), `history` (JSON list of `{"action", "result"}`, optional)
+and `identity` (optional JSON `{"email", "password", "name", "verification_code"}`, the site's demo
+account). Returns one action. Every action has a `thought`.
+
+Without `identity` the prompt says never to log in, pay or submit personal data, and `give_up`
+covers logging in. With it the prompt hands over the credentials and swaps that rule: sign up and
+log in with exactly that email and password (a made-up name is fine), never with Google, GitHub,
+Apple, single sign-on or a passkey, never enter payment details, a phone number or a postal
+address, give up at a CAPTCHA, and never delete, invite or change billing. `verification_code` is
+set once the verification email arrived, and the prompt tells the model to type it if the page asks.
 
 ```json
 { "action": "click", "thought": "...", "element": "Sign Up link at the bottom", "x": 1613, "y": 1404 }
