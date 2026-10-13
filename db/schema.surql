@@ -79,6 +79,8 @@ DEFINE FIELD OVERWRITE description ON screen TYPE option<string>;
 -- a text query embedded the same way is matched by cosine distance. 1024 found the same neighbours
 -- as the full 2048 on our screens, where 512 started to return unrelated pages (issue #7).
 DEFINE FIELD OVERWRITE embedding ON screen TYPE option<array<float>>;
+-- Captured while logged in to the site's demo account (see `account`). Missing means logged out.
+DEFINE FIELD OVERWRITE signed_in ON screen TYPE option<bool>;
 DEFINE FIELD OVERWRITE captured_at ON screen TYPE datetime DEFAULT time::now() READONLY;
 DEFINE INDEX IF NOT EXISTS screen_site ON screen FIELDS site, viewport, seq;
 DEFINE INDEX IF NOT EXISTS screen_crawl ON screen FIELDS crawl;
@@ -143,6 +145,8 @@ DEFINE FIELD OVERWRITE source ON flow TYPE 'structure' | 'goal';
 DEFINE FIELD OVERWRITE title ON flow TYPE string DEFAULT '';
 -- One of a fixed list chosen by the model (milestone 3), e.g. 'onboarding', 'pricing'.
 DEFINE FIELD OVERWRITE category ON flow TYPE option<string>;
+-- Goal flows only: the run was logged in to the site's demo account for at least one step.
+DEFINE FIELD OVERWRITE signed_in ON flow TYPE option<bool>;
 -- The screens in order. `action` is the edge that led to the step and is missing on the first.
 DEFINE FIELD OVERWRITE steps ON flow TYPE array<object> DEFAULT [];
 DEFINE FIELD OVERWRITE steps[*].screen ON flow TYPE record<screen>;
@@ -199,3 +203,21 @@ DEFINE FIELD OVERWRITE last_used_at ON api_key TYPE option<datetime>;
 -- Set when the key is revoked; a revoked key is refused.
 DEFINE FIELD OVERWRITE revoked_at ON api_key TYPE option<datetime>;
 DEFINE INDEX IF NOT EXISTS api_key_hash ON api_key FIELDS hash UNIQUE;
+
+-- The demo account exploration uses on a site, one per site and shared by both viewports. The
+-- address is a plus address of the demo Gmail inbox (`name+<site>@gmail.com`), so sites stay apart
+-- and one inbox receives every verification email. The password is random per site. `status` is
+-- 'pending' until the sign-up is confirmed, then 'active'; 'failed' means the sign-up was refused
+-- and `failure` says why, so the next crawl doesn't try again with the same address.
+-- `storage_state` is Playwright's storage state as JSON (cookies and local storage), so later
+-- crawls start logged in. All of it is plain text for now, which has to change before hosting.
+DEFINE TABLE OVERWRITE account SCHEMAFULL;
+DEFINE FIELD OVERWRITE site ON account TYPE record<site>;
+DEFINE FIELD OVERWRITE email ON account TYPE string;
+DEFINE FIELD OVERWRITE password ON account TYPE string;
+DEFINE FIELD OVERWRITE status ON account TYPE 'pending' | 'active' | 'failed' DEFAULT 'pending';
+DEFINE FIELD OVERWRITE failure ON account TYPE option<string>;
+DEFINE FIELD OVERWRITE storage_state ON account TYPE option<string>;
+DEFINE FIELD OVERWRITE created_at ON account TYPE datetime DEFAULT time::now() READONLY;
+DEFINE FIELD OVERWRITE logged_in_at ON account TYPE option<datetime>;
+DEFINE INDEX IF NOT EXISTS account_site ON account FIELDS site UNIQUE;

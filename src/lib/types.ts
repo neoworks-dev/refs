@@ -140,6 +140,8 @@ export interface Screen {
 	image_hash: string;
 	page_type?: string;
 	description?: string;
+	/** Captured while logged in to the site's demo account. */
+	signed_in?: boolean;
 	captured_at: string;
 }
 
@@ -206,6 +208,8 @@ export interface Flow {
 	goal?: string;
 	outcome?: FlowOutcome;
 	outcome_reason?: string;
+	/** Goal flows only: logged in to the demo account for at least one step. */
+	signed_in?: boolean;
 	video?: FlowVideo;
 	created_at: string;
 }
@@ -234,4 +238,20 @@ export interface ApiKey {
 	created_at: string;
 	last_used_at?: string;
 	revoked_at?: string;
+}
+
+export type AccountStatus = 'pending' | 'active' | 'failed';
+
+/** The demo account exploration signs up and logs in with on one site. */
+export interface Account {
+	id: string;
+	site: string;
+	email: string;
+	password: string;
+	status: AccountStatus;
+	failure?: string;
+	/** Playwright storage state as JSON, so a later crawl starts logged in. */
+	storage_state?: string;
+	created_at: string;
+	logged_in_at?: string;
 }
