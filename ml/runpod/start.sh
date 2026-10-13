@@ -12,6 +12,11 @@ export PATH=/workspace/bin:$PATH
 export HF_HUB_OFFLINE=1
 # vLLM's compiled kernels, kept on the volume so a new pod doesn't compile them again.
 export VLLM_CACHE_ROOT=/workspace/vllm-cache
+# The same for FlashInfer's sampling kernels, which otherwise took 90 s to build on every new pod.
+export FLASHINFER_WORKSPACE_BASE=/workspace
+# vLLM captures the CUDA graphs twice by default, once only to measure their memory. They take
+# under 1 GB here, which the 30% of the card left free covers, so the 30 s measuring run is skipped.
+export VLLM_MEMORY_PROFILER_ESTIMATE_CUDAGRAPHS=0
 
 cd /workspace/refs/ml
 nohup uv run --no-default-groups serve --profile "${REFS_PROFILE:-a100}" >/workspace/serve.log 2>&1 &
