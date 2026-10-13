@@ -9,10 +9,10 @@ that moment, and two servers starting at once would both claim the same memory.
 Profiles:
 - `holo-4b` (the default) fits a 16 GB card: Holo3.1-4B on llama.cpp decides, points and
   classifies, next to the embedder on vLLM.
-- `a100` is for a rented 80 GB card (A100 or H100): Qwen3.8-27B in FP8 decides, plans and
-  classifies, and Holo3.1-4B runs next to it only to point at elements, which is what it is
-  trained for. Everything runs on vLLM, which serves many requests at once, so several
+- `a100` is for a rented 80 GB card (A100 or H100): Qwen3.8-27B in FP8 does everything, next to
+  the embedder. Everything runs on vLLM, which serves many requests at once, so several
   explorations can share the card. ml/runpod/ sets up a rented machine.
+- `a100-holo-grounding` is the same, with Holo3.1-4B pointing at elements instead, to compare.
 """
 
 import argparse
@@ -92,16 +92,33 @@ PROFILES = {
         embedding_memory_share=0.40,
         embedding_eager=True,
     ),
+    # Qwen's own FP8 build, 31 GB. The A100 has no FP8 tensor cores, so vLLM runs the 8-bit
+    # weights with 16-bit math there. That costs little, because generating is limited by memory
+    # bandwidth rather than math. An H100 runs it natively.
     "a100": Profile(
-        # Qwen's own FP8 build, 31 GB. The A100 has no FP8 tensor cores, so vLLM runs the 8-bit
-        # weights with 16-bit math there. That costs little, because generating is limited by
-        # memory bandwidth rather than math. An H100 runs it natively.
+        # Qwen3.8 does everything, pointing at elements included: Qwen's vision models are trained
+        # to answer with positions on the same 0 to 1000 grid the grounding prompt asks for.
         vlm=VllmModel(
             repo="Qwen/Qwen3.8-27B-FP8",
-            # 44 of 80 GB: 31 for the weights, the rest caches the requests of parallel explorations.
-            memory_share=0.55,
+            # 56 of 80 GB: 31 for the weights, the rest caches the requests of parallel explorations.
+            memory_share=0.70,
             # An exploration step carries a screenshot, the accessibility tree and the history,
             # and planning gets the site map, so 32k leaves room for both.
+            context_tokens=32768,
+            images_per_request=10,
+        ),
+        grounder=None,
+        # 6 of 80 GB, about what the embedder gets on the small card.
+        embedding_memory_share=0.08,
+        embedding_eager=False,
+    ),
+    # The same, with Holo3.1-4B pointing at elements instead, because it is fine-tuned for just
+    # that. Kept to compare click accuracy against Qwen on the evaluation in eval/.
+    "a100-holo-grounding": Profile(
+        vlm=VllmModel(
+            repo="Qwen/Qwen3.8-27B-FP8",
+            # 44 of 80 GB, so that Holo fits next to it.
+            memory_share=0.55,
             context_tokens=32768,
             images_per_request=10,
         ),
@@ -113,7 +130,6 @@ PROFILES = {
             context_tokens=8192,
             images_per_request=1,
         ),
-        # 6 of 80 GB, about what the embedder gets on the small card.
         embedding_memory_share=0.08,
         embedding_eager=False,
     ),

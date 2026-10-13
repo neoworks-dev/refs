@@ -1,7 +1,7 @@
 # Running the models on RunPod
 
-The `a100` profile runs Qwen3.8-27B (FP8) for deciding and planning, Holo3.1-4B for pointing at
-elements, and the embedder, all on one rented 80 GB card. Only the model service runs there. The
+The `a100` profile runs Qwen3.8-27B (FP8) for everything, and the embedder next to it, on one
+rented 80 GB card. Only the model service runs there. The
 database, the app and the crawler's browsers stay on your machine and reach the models through an
 SSH tunnel, so nothing on the pod is exposed to the internet.
 
@@ -37,4 +37,6 @@ SSH tunnel, so nothing on the pod is exposed to the internet.
 5. **Terminate the pod** when you are done, from the RunPod console. A stopped pod still costs
    money for its disk, and the network volume keeps the weights for next time.
 
-To stop the models without ending the pod, run `pkill -TERM -f "serve --profile a100"` there.
+To stop the models without ending the pod, run `pkill -TERM -f "serve --profile"` there. To compare
+with Holo pointing at elements, start with `REFS_PROFILE=a100-holo-grounding bash start.sh` (run
+setup.sh with the same variable first, so Holo gets downloaded).

@@ -10,5 +10,5 @@ export UV_PYTHON_INSTALL_DIR=/workspace/uv/python
 export PATH=/workspace/bin:$PATH
 
 cd /workspace/refs/ml
-nohup uv run --no-default-groups serve --profile a100 >/workspace/serve.log 2>&1 &
+nohup uv run --no-default-groups serve --profile "${REFS_PROFILE:-a100}" >/workspace/serve.log 2>&1 &
 echo "Starting (pid $!). Loading takes a few minutes: tail -f /workspace/serve.log"
