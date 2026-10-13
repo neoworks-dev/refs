@@ -255,3 +255,20 @@ export interface Account {
 	created_at: string;
 	logged_in_at?: string;
 }
+
+/** A goal exploration is trying right now, as the live panel shows it. The screenshot is served separately. */
+export interface LiveGoal {
+	id: string;
+	crawl: string;
+	site: string;
+	viewport: Viewport;
+	/** The worker trying it, when several goals run at once. */
+	slot: number;
+	goal: string;
+	step: number;
+	thought?: string;
+	/** The last action in words, e.g. `click "Pricing"`. */
+	action?: string;
+	signed_in?: boolean;
+	updated_at: string;
+}

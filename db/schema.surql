@@ -221,3 +221,25 @@ DEFINE FIELD OVERWRITE storage_state ON account TYPE option<string>;
 DEFINE FIELD OVERWRITE created_at ON account TYPE datetime DEFAULT time::now() READONLY;
 DEFINE FIELD OVERWRITE logged_in_at ON account TYPE option<datetime>;
 DEFINE INDEX IF NOT EXISTS account_site ON account FIELDS site UNIQUE;
+
+-- What exploration is doing right now, for the live panel on a site's page. One row per goal being
+-- tried at the same time (`slot` is the worker), overwritten on every step and deleted when the
+-- goal ends, so the table only ever holds current runs. The screenshot is the browser's viewport
+-- after the last step, kept here rather than in media because media keys are never overwritten.
+-- A row whose `updated_at` is minutes old belongs to a crawler that died, and the UI ignores it.
+DEFINE TABLE OVERWRITE live_goal SCHEMAFULL;
+DEFINE FIELD OVERWRITE crawl ON live_goal TYPE record<crawl>;
+DEFINE FIELD OVERWRITE site ON live_goal TYPE record<site>;
+DEFINE FIELD OVERWRITE viewport ON live_goal TYPE 'desktop' | 'mobile';
+DEFINE FIELD OVERWRITE slot ON live_goal TYPE int;
+DEFINE FIELD OVERWRITE goal ON live_goal TYPE string;
+DEFINE FIELD OVERWRITE step ON live_goal TYPE int DEFAULT 0;
+DEFINE FIELD OVERWRITE thought ON live_goal TYPE option<string>;
+-- The last action in words, e.g. `click "Pricing"`.
+DEFINE FIELD OVERWRITE action ON live_goal TYPE option<string>;
+DEFINE FIELD OVERWRITE signed_in ON live_goal TYPE option<bool>;
+-- JPEG of the viewport.
+DEFINE FIELD OVERWRITE screenshot ON live_goal TYPE option<bytes>;
+DEFINE FIELD OVERWRITE updated_at ON live_goal TYPE datetime VALUE time::now();
+DEFINE INDEX IF NOT EXISTS live_goal_slot ON live_goal FIELDS crawl, slot UNIQUE;
+DEFINE INDEX IF NOT EXISTS live_goal_site ON live_goal FIELDS site;
