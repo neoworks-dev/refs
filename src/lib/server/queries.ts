@@ -5,6 +5,7 @@ import type {
 	Crawl,
 	ElementKind,
 	Flow,
+	LiveGoal,
 	Rect,
 	Screen,
 	SectionLabel,
@@ -409,14 +410,22 @@ export interface SiteOverview {
 	screenCounts: Record<Viewport, number>;
 	flowCounts: Record<Viewport, number>;
 	kindCounts: Record<Viewport, Partial<Record<ElementKind, number>>>;
+	/** The goals exploration is trying right now, by viewport and then worker. */
+	liveGoals: LiveGoal[];
 }
+
+/**
+ * A live goal reports after every step, which takes seconds. One that has been silent this long
+ * belongs to a crawler that died without cleaning up, so it is not shown.
+ */
+const LIVE_GOAL_MAX_AGE = '2m';
 
 export async function getSiteOverview(slug: string): Promise<SiteOverview | undefined> {
 	const [site] = await rows<Site>('SELECT * FROM site WHERE slug = $slug LIMIT 1', { slug });
 	if (!site) return undefined;
 	const siteRecord = new RecordId('site', site.id);
 
-	const [crawls, screenGroups, flowGroups, currentCrawls] = await Promise.all([
+	const [crawls, screenGroups, flowGroups, liveGoals, currentCrawls] = await Promise.all([
 		rows<Crawl>('SELECT * FROM crawl WHERE site = $site ORDER BY created_at DESC LIMIT 20', {
 			site: siteRecord
 		}),
@@ -429,6 +438,13 @@ export async function getSiteOverview(slug: string): Promise<SiteOverview | unde
 		rows<{ crawl: string; count: number }>(
 			'SELECT crawl, count() AS count FROM flow WHERE site = $site GROUP BY crawl',
 			{ site: siteRecord }
+		),
+		// The screenshot is left out: it is large and the panel fetches it as an image.
+		rows<LiveGoal>(
+			`SELECT * OMIT screenshot FROM live_goal
+			 WHERE site = $site AND updated_at > time::now() - <duration> $maxAge
+			 ORDER BY viewport, slot`,
+			{ site: siteRecord, maxAge: LIVE_GOAL_MAX_AGE }
 		),
 		db().then((database) => sourceCrawls(database, site.id))
 	]);
@@ -458,7 +474,16 @@ export async function getSiteOverview(slug: string): Promise<SiteOverview | unde
 		})
 	);
 
-	return { site, crawls, sources, screenCounts, flowCounts, kindCounts };
+	return { site, crawls, sources, screenCounts, flowCounts, kindCounts, liveGoals };
+}
+
+/** The JPEG of a live goal's browser after its last step, or undefined once the goal has ended. */
+export async function getLiveGoalScreenshot(goalId: string): Promise<Uint8Array | undefined> {
+	const [goal] = await rows<{ screenshot?: Uint8Array }>(
+		'SELECT screenshot FROM live_goal WHERE id = $goal',
+		{ goal: new RecordId('live_goal', goalId) }
+	);
+	return goal?.screenshot;
 }
 
 export interface ScreenList {

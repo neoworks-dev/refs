@@ -85,9 +85,10 @@
 		data.crawls.find((crawl) => crawl.status === 'done' && crawl.finished_at)?.finished_at
 	);
 
-	// Poll while a crawl is queued or running so the status strip and the grids fill in live.
+	// Poll while a crawl is queued or running so the status strip and the grids fill in live, and
+	// while goals are being explored, which happens after the crawl is marked done.
 	$effect(() => {
-		if (activeCrawls.length === 0) return;
+		if (activeCrawls.length === 0 && data.liveGoals.length === 0) return;
 		const timer = setInterval(() => invalidate('app:site'), 2500);
 		return () => clearInterval(timer);
 	});
@@ -211,6 +212,69 @@
 
 	<CrawlStatus crawls={data.crawls} />
 </section>
+
+{#if data.liveGoals.length > 0}
+	<section class="mt-10" aria-label="Live exploration">
+		<h2
+			class="flex items-center gap-2.5 text-[28px] leading-tight font-semibold tracking-[-0.035em]"
+		>
+			Live
+			<span class="size-2.5 animate-pulse rounded-full bg-emerald-500"></span>
+			<span class="text-[17px] font-normal tracking-normal text-neutral-400 dark:text-neutral-500">
+				{data.liveGoals.length}
+			</span>
+		</h2>
+		<ul class="mt-5 grid grid-cols-1 gap-x-5 gap-y-9 sm:grid-cols-2 lg:grid-cols-3">
+			{#each data.liveGoals as goal (goal.id)}
+				<li class="flex min-w-0 flex-col gap-3">
+					<div
+						class="relative flex aspect-[1.4] items-center justify-center overflow-hidden rounded-3xl bg-neutral-100 dark:bg-white/[0.07]"
+					>
+						<!-- The step in the URL makes the browser fetch the new screenshot; until it has loaded, the old one stays. -->
+						<img
+							src="/sites/{data.site.slug}/live/{goal.id}?step={goal.step}"
+							alt="The browser after step {goal.step} of {goal.goal}"
+							class={[
+								'bg-white',
+								goal.viewport === 'desktop' &&
+									'w-[86%] rounded-xl shadow-[0_0_0_1px_rgb(0_0_0/0.06),0_8px_24px_-12px_rgb(0_0_0/0.25)] dark:shadow-[0_0_0_1px_rgb(255_255_255/0.12)]',
+								goal.viewport === 'mobile' &&
+									'h-[88%] rounded-[22px] ring-1 ring-black/[0.08] dark:ring-white/15'
+							]}
+							style:aspect-ratio={goal.viewport === 'desktop' ? '1440 / 900' : '393 / 852'}
+						/>
+					</div>
+					<div class="min-w-0 px-0.5 leading-snug">
+						<div class="text-[15px] font-medium">{goal.goal}</div>
+						<div
+							class="mt-0.5 flex flex-wrap items-center gap-x-2 text-[14px] text-neutral-500 dark:text-neutral-400"
+						>
+							<span class="capitalize">{goal.viewport}</span>
+							<span>·</span>
+							<span>Step {goal.step}</span>
+							{#if goal.action}
+								<span>·</span>
+								<span class="min-w-0 truncate">{goal.action}</span>
+							{/if}
+							{#if goal.signed_in}
+								<span
+									class="rounded-full bg-neutral-100 px-2 py-0.5 text-[12px] font-medium text-neutral-600 dark:bg-white/10 dark:text-neutral-300"
+								>
+									Logged in
+								</span>
+							{/if}
+						</div>
+						{#if goal.thought}
+							<p class="mt-1.5 line-clamp-3 text-[14px] text-neutral-400 dark:text-neutral-500">
+								{goal.thought}
+							</p>
+						{/if}
+					</div>
+				</li>
+			{/each}
+		</ul>
+	</section>
+{/if}
 
 <!-- Below 640px the viewport switch and the tabs stack, because they do not fit side by side. -->
 <div
@@ -378,7 +442,16 @@
 											'text-neutral-600 hover:bg-neutral-50 hover:text-black dark:text-neutral-300 dark:hover:bg-white/5 dark:hover:text-white'
 									]}
 								>
-									<span class="min-w-0">{candidate.title || 'Untitled flow'}</span>
+									<span class="min-w-0">
+										{candidate.title || 'Untitled flow'}
+										{#if candidate.signed_in}
+											<span
+												class="ml-1 rounded-full bg-neutral-100 px-2 py-0.5 text-[12px] font-medium text-neutral-600 dark:bg-white/10 dark:text-neutral-300"
+											>
+												Logged in
+											</span>
+										{/if}
+									</span>
 									<span class="shrink-0 text-neutral-400 dark:text-neutral-500">
 										{candidate.steps.length}
 									</span>
@@ -419,6 +492,14 @@
 					<p class="mt-1 text-[16px] text-neutral-500 dark:text-neutral-400">
 						{flow.category ? `${humanise(flow.category)} · ` : ''}{data.flowSteps.length}
 						{data.flowSteps.length === 1 ? 'screen' : 'screens'}
+						{#if flow.signed_in}
+							<!-- Run logged in to the site's demo account, so it shows what a signed-in user sees. -->
+							<span
+								class="ml-1 rounded-full bg-neutral-100 px-2 py-0.5 text-[12px] font-medium text-neutral-600 dark:bg-white/10 dark:text-neutral-300"
+							>
+								Logged in
+							</span>
+						{/if}
 					</p>
 				</div>
 				<SaveButton table="flow" id={flow.id} label={flow.title || 'flow'} variant="pill" />
