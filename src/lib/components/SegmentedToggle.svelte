@@ -1,0 +1,28 @@
+<script lang="ts" generics="Value extends string">
+	// A pill-shaped switch like Mobbin's iOS/Web toggle. Options are real links so the toggle
+	// works without JS and each state is addressable in the URL.
+	type Option = { value: Value; label: string; href: string };
+
+	let { options, active, label }: { options: Option[]; active: Value; label: string } = $props();
+</script>
+
+<div
+	class="inline-flex rounded-full bg-neutral-100 p-1"
+	role="group"
+	aria-label={label}
+	data-sveltekit-reset="false"
+>
+	{#each options as option (option.value)}
+		<a
+			href={option.href}
+			aria-current={option.value === active ? 'true' : undefined}
+			class={[
+				'rounded-full px-4 py-1.5 text-[15px] font-medium transition-colors',
+				option.value === active && 'bg-white text-black shadow-[0_1px_2px_rgb(0_0_0/0.12)]',
+				option.value !== active && 'text-neutral-500 hover:text-black'
+			]}
+		>
+			{option.label}
+		</a>
+	{/each}
+</div>
