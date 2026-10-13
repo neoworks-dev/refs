@@ -17,7 +17,7 @@
 			href={option.href}
 			aria-current={option.value === active ? 'true' : undefined}
 			class={[
-				'rounded-full px-4 py-1.5 text-[15px] font-medium transition-colors',
+				'rounded-full px-4 py-1.5 text-[15px] font-medium transition-colors focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-black',
 				option.value === active && 'bg-white text-black shadow-[0_1px_2px_rgb(0_0_0/0.12)]',
 				option.value !== active && 'text-neutral-500 hover:text-black'
 			]}

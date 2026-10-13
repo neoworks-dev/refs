@@ -89,17 +89,25 @@
 <svelte:head><title>{data.site.name} · Refs</title></svelte:head>
 
 <section class="pt-4">
-	<SiteIcon name={data.site.name} icon={data.site.icon} class="size-[92px] rounded-[22px]" />
-	<h1 class="mt-5 text-[56px] leading-[1.02] font-semibold tracking-[-0.05em]">{data.site.name}</h1>
+	<SiteIcon
+		name={data.site.name}
+		icon={data.site.icon}
+		class="size-[72px] rounded-[18px] sm:size-[92px] sm:rounded-[22px]"
+	/>
+	<h1
+		class="mt-5 text-[40px] leading-[1.02] font-semibold tracking-[-0.05em] break-words sm:text-[56px]"
+	>
+		{data.site.name}
+	</h1>
 	{#if data.site.description}
 		<p
-			class="mt-3 line-clamp-2 max-w-3xl text-[20px] leading-snug tracking-[-0.01em] text-neutral-500"
+			class="mt-3 line-clamp-2 max-w-3xl text-[17px] leading-snug tracking-[-0.01em] text-neutral-500 sm:text-[20px]"
 		>
 			{data.site.description}
 		</p>
 	{/if}
 
-	<dl class="mt-6 flex flex-wrap gap-x-10 gap-y-4 text-[17px]">
+	<dl class="mt-6 grid grid-cols-2 gap-x-8 gap-y-4 text-[17px] sm:flex sm:flex-wrap sm:gap-x-10">
 		<div>
 			<dt class="text-[15px] text-neutral-500">Viewports</dt>
 			<dd class="font-medium">
@@ -162,7 +170,10 @@
 	<CrawlStatus crawls={data.crawls} />
 </section>
 
-<div class="mt-10 flex h-14 items-center gap-5 border-b border-neutral-200/70">
+<!-- Below 640px the viewport switch and the tabs stack, because they do not fit side by side. -->
+<div
+	class="mt-10 flex flex-col gap-4 sm:h-14 sm:flex-row sm:items-center sm:gap-5 sm:border-b sm:border-neutral-200/70"
+>
 	<SegmentedToggle
 		label="Viewport"
 		active={data.viewport}
@@ -180,8 +191,12 @@
 			}
 		]}
 	/>
-	<span class="h-6 w-px bg-neutral-200"></span>
-	<nav class="flex h-full items-center gap-7" aria-label="Content" data-sveltekit-reset="false">
+	<span class="hidden h-6 w-px bg-neutral-200 sm:block"></span>
+	<nav
+		class="flex h-12 items-center gap-7 border-b border-neutral-200/70 sm:h-full sm:border-b-0"
+		aria-label="Content"
+		data-sveltekit-reset="false"
+	>
 		<!-- The active tab's underline sits on the row's bottom border. -->
 		{#each [{ value: 'screens', label: 'Screens', href: link( { tab: undefined, kind: undefined } ) }, { value: 'elements', label: 'Elements', href: link( { tab: 'elements' } ) }] as tab (tab.value)}
 			<a
@@ -257,15 +272,12 @@
 		</div>
 
 		{#if data.elements.length > 0}
-			<!-- CSS columns give a masonry layout: tall sections and small buttons both pack tightly. -->
 			<ul
-				class="columns-1 gap-5 sm:columns-2 lg:columns-3 xl:columns-4"
+				class="grid grid-flow-dense grid-cols-1 gap-x-5 gap-y-8 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4"
 				data-sveltekit-reset="false"
 			>
 				{#each data.elements as element (element.id)}
-					<li class="mb-7 break-inside-avoid">
-						<ElementTile {element} href={link({ screen: element.screen, el: element.id })} />
-					</li>
+					<ElementTile {element} href={link({ screen: element.screen, el: element.id })} />
 				{/each}
 			</ul>
 		{:else}

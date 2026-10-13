@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { Plus } from '@lucide/svelte';
+	import { Plus, X } from '@lucide/svelte';
 	import { page } from '$app/state';
 	import SegmentedToggle from '#lib/components/SegmentedToggle.svelte';
 	import SiteCard from '#lib/components/SiteCard.svelte';
@@ -16,14 +16,18 @@
 		params.set('viewport', viewport);
 		return `/?${params}`;
 	}
+
+	// The search palette no longer filters this page, but `/?q=` still does, so a link into it
+	// has to show what it is filtering by and a way out.
+	const clearSearchHref = $derived(`/?viewport=${data.viewport}`);
 </script>
 
 <svelte:head><title>Sites · Refs</title></svelte:head>
 
 <div class="pt-6">
-	<h1 class="text-[44px] leading-none font-semibold tracking-[-0.045em]">Sites</h1>
+	<h1 class="text-[36px] leading-none font-semibold tracking-[-0.045em] sm:text-[44px]">Sites</h1>
 
-	<div class="mt-6 flex items-center gap-5">
+	<div class="mt-6 flex flex-wrap items-center gap-x-5 gap-y-3">
 		<SegmentedToggle
 			label="Viewport"
 			active={data.viewport}
@@ -32,6 +36,16 @@
 				{ value: 'mobile', label: 'Mobile', href: viewportHref('mobile') }
 			]}
 		/>
+		{#if searching}
+			<a
+				href={clearSearchHref}
+				aria-label="Clear search"
+				class="inline-flex h-10 max-w-full items-center gap-2 rounded-full border border-neutral-200 pr-3 pl-4 text-[15px] font-medium transition-colors hover:bg-neutral-100 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-black"
+			>
+				<span class="truncate">“{data.query.trim()}”</span>
+				<X class="size-4 shrink-0 text-neutral-400" strokeWidth={2.25} />
+			</a>
+		{/if}
 		{#if data.sites.length > 0}
 			<span class="text-[15px] text-neutral-500">
 				{data.sites.length}
@@ -48,7 +62,7 @@
 		{/each}
 	</ul>
 {:else}
-	<div class="flex flex-col items-center px-6 pt-28 text-center">
+	<div class="flex flex-col items-center px-2 pt-20 text-center sm:px-6 sm:pt-28">
 		<!-- Three ghosted cards, echoing Mobbin's empty state. -->
 		<div class="relative h-[104px] w-[132px]" aria-hidden="true">
 			<div
@@ -77,10 +91,10 @@
 			{/if}
 		</p>
 
-		<div class="mt-8 flex gap-3">
+		<div class="mt-8 flex flex-wrap justify-center gap-3">
 			{#if searching}
 				<a
-					href="/"
+					href={clearSearchHref}
 					class="inline-flex h-11 items-center justify-center rounded-full border border-neutral-200 bg-white px-5 text-[15px] font-medium transition-colors hover:bg-neutral-100"
 				>
 					Clear search

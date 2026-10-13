@@ -1,51 +1,24 @@
 <script lang="ts">
-	import { goto } from '$app/navigation';
-	import { page } from '$app/state';
 	import { Plus, Search, X } from '@lucide/svelte';
 	import { onMount } from 'svelte';
 	import AddSiteForm from './AddSiteForm.svelte';
 	import Modal from './Modal.svelte';
+	import SearchPalette from './SearchPalette.svelte';
 
-	// Search lives in the URL (`/?q=`), so the bar always submits to the discover page. Typing
-	// filters live after a short pause; the real form submit keeps it working without JS.
-	// Follows the URL (back button, clearing the search elsewhere) and is overwritten while typing.
-	let query = $derived(page.url.pathname === '/' ? (page.url.searchParams.get('q') ?? '') : '');
-	let input: HTMLInputElement | undefined = $state();
-	let timer: ReturnType<typeof setTimeout> | undefined;
 	let addDialogOpen = $state(false);
+	let paletteOpen = $state(false);
 
-	function search(value: string) {
-		const params = new URLSearchParams();
-		if (value.trim()) params.set('q', value.trim());
-		const viewport = page.url.searchParams.get('viewport');
-		if (viewport && page.url.pathname === '/') params.set('viewport', viewport);
-		const suffix = params.size > 0 ? `?${params}` : '';
-		goto(`/${suffix}`, { reset: false, replace: page.url.pathname === '/' });
-	}
-
-	function oninput() {
-		clearTimeout(timer);
-		timer = setTimeout(() => search(query), 220);
-	}
-
+	// The shortcut hint names the key the user actually has. Ctrl is the server-rendered default.
+	let shortcut = $state('Ctrl K');
 	onMount(() => {
-		// "/" jumps to the search field, like most documentation and gallery sites.
-		function onkeydown(event: KeyboardEvent) {
-			const target = event.target as HTMLElement;
-			const typing = target.matches('input, textarea, select, [contenteditable]');
-			if (event.key === '/' && !typing && !event.metaKey && !event.ctrlKey) {
-				event.preventDefault();
-				input?.focus();
-			}
-		}
-		window.addEventListener('keydown', onkeydown);
-		return () => window.removeEventListener('keydown', onkeydown);
+		if (/Mac|iPhone|iPad/.test(navigator.userAgent)) shortcut = '⌘K';
 	});
 </script>
 
 <header class="sticky top-0 z-30 bg-white/90 backdrop-blur-md">
+	<!-- Below 1024px the search collapses into an icon next to the button on the right. -->
 	<div
-		class="mx-auto grid h-[76px] max-w-[1920px] grid-cols-[1fr_minmax(0,34rem)_1fr] items-center gap-6 px-6 sm:px-8 lg:px-10"
+		class="mx-auto flex h-[68px] max-w-[1920px] items-center gap-3 px-6 sm:px-8 lg:grid lg:h-[76px] lg:grid-cols-[1fr_minmax(0,34rem)_1fr] lg:gap-6 lg:px-10"
 	>
 		<div class="flex items-center gap-8">
 			<!-- "Refs" wordmark: three stacked bars (a pile of references) next to the name. -->
@@ -62,38 +35,22 @@
 			</nav>
 		</div>
 
-		<form
-			action="/"
-			method="GET"
-			role="search"
-			class="relative"
-			onsubmit={(event) => {
-				event.preventDefault();
-				clearTimeout(timer);
-				search(query);
-			}}
+		<button
+			type="button"
+			onclick={() => (paletteOpen = true)}
+			aria-label="Search"
+			class="flex size-11 items-center justify-center rounded-full bg-neutral-100 text-black transition-colors hover:bg-neutral-200/70 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-black max-lg:ml-auto lg:h-[46px] lg:w-full lg:justify-start lg:gap-3.5 lg:px-5"
 		>
-			<Search
-				class="pointer-events-none absolute top-1/2 left-5 size-[19px] -translate-y-1/2 text-black"
-				strokeWidth={2.25}
-			/>
-			<input
-				bind:this={input}
-				bind:value={query}
-				{oninput}
-				type="search"
-				name="q"
-				placeholder="Search sites…"
-				autocomplete="off"
-				aria-label="Search sites"
-				class="h-[46px] w-full rounded-full border-0 bg-neutral-100 pr-12 pl-[52px] text-[17px] text-black placeholder:text-neutral-400 focus:bg-neutral-100 focus:ring-2 focus:ring-black focus:outline-none [&::-webkit-search-cancel-button]:appearance-none"
-			/>
+			<Search class="size-[19px] shrink-0" strokeWidth={2.25} />
+			<span class="hidden flex-1 text-left text-[17px] text-neutral-400 lg:block">
+				Search sites, screens, elements…
+			</span>
 			<kbd
-				class="pointer-events-none absolute top-1/2 right-4 hidden size-6 -translate-y-1/2 items-center justify-center rounded-md border border-neutral-300 bg-white text-xs font-medium text-neutral-400 sm:flex"
+				class="hidden shrink-0 rounded-md border border-neutral-300 bg-white px-1.5 py-0.5 font-sans text-xs font-medium text-neutral-400 lg:block"
 			>
-				/
+				{shortcut}
 			</kbd>
-		</form>
+		</button>
 
 		<div class="flex items-center justify-end gap-3">
 			<!-- Without JS this is a plain link to the standalone /add page. -->
@@ -112,11 +69,13 @@
 	</div>
 </header>
 
+<SearchPalette bind:open={paletteOpen} />
+
 {#if addDialogOpen}
 	<Modal
 		label="Add site"
 		onclose={() => (addDialogOpen = false)}
-		class="w-[min(92vw,34rem)] rounded-[2rem] bg-white px-10 pt-16 pb-10 shadow-2xl"
+		class="w-[min(92vw,34rem)] rounded-[2rem] bg-white px-6 pt-16 pb-8 shadow-2xl sm:px-10 sm:pb-10"
 	>
 		<button
 			type="button"

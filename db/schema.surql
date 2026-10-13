@@ -107,3 +107,16 @@ DEFINE FIELD OVERWRITE rect.x ON action TYPE number;
 DEFINE FIELD OVERWRITE rect.y ON action TYPE number;
 DEFINE FIELD OVERWRITE rect.w ON action TYPE number;
 DEFINE FIELD OVERWRITE rect.h ON action TYPE number;
+
+-- API keys for the MCP server. Only a SHA-256 hash of the key is stored; the key itself is shown
+-- once when it is created and can't be recovered. Keys look like `refs_<random>`.
+DEFINE TABLE OVERWRITE api_key SCHEMAFULL;
+-- Who or what the key is for, e.g. "Moritz laptop".
+DEFINE FIELD OVERWRITE name ON api_key TYPE string;
+-- Hex SHA-256 of the full key.
+DEFINE FIELD OVERWRITE hash ON api_key TYPE string;
+DEFINE FIELD OVERWRITE created_at ON api_key TYPE datetime DEFAULT time::now() READONLY;
+DEFINE FIELD OVERWRITE last_used_at ON api_key TYPE option<datetime>;
+-- Set when the key is revoked; a revoked key is refused.
+DEFINE FIELD OVERWRITE revoked_at ON api_key TYPE option<datetime>;
+DEFINE INDEX OVERWRITE api_key_hash ON api_key FIELDS hash UNIQUE;

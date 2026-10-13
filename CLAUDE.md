@@ -54,6 +54,8 @@ The models run locally on a 16 GB GPU. Holo3.1-4B, a fine-tune of Qwen3.5, drive
 
 Flows will be cut out of the action graph by structure first. A flow starts at a main navigation click and continues while the URL stays under one prefix, the same dialog or form advances, or the clicked labels are words like "Continue". The model then names each flow with a category from a fixed list, a free-text title and a caption per step. Goal-directed exploration produces flows that are labelled by construction.
 
+The library is also available to models through an MCP server at `/mcp`, hosted at `https://refs.neoworks.dev/mcp`. It is read-only, needs an API key (`bun run api-key create <name>`, stored as a SHA-256 hash in `api_key`), and has exactly two tools, because fewer tools are easier for a model to use well. `search` finds sites, pages, screens and elements, optionally scoped to one site and one page path. `get` returns everything about one screen or site. Results are inline preview images followed by one JSON block, modelled on Mobbin's MCP, without its telemetry parameters. Keep it to two tools; flows become a new `type` of `search`, not a new tool. Auth gets revisited before hosting.
+
 Crawls never log in. Refs only captures what a site shows to a visitor who isn't signed in, so there are no accounts, sessions or stored credentials.
 
 ## How we work

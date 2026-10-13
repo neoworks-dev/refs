@@ -7,10 +7,12 @@
 		onclose: () => void;
 		/** Classes for the panel, which decides the modal's size and colour. */
 		class?: string;
+		/** `top` hangs the panel below the top edge, like a command palette. */
+		align?: 'center' | 'top';
 		children: Snippet;
 	};
 
-	let { label, onclose, class: className, children }: Props = $props();
+	let { label, onclose, class: className, align = 'center', children }: Props = $props();
 
 	let dialog = $state<HTMLDialogElement>();
 
@@ -33,7 +35,11 @@ backdrop click. Keyboard users close with Escape. -->
 	onmousedown={(event) => {
 		if (event.target === dialog) onclose();
 	}}
-	class="fixed inset-0 m-0 h-dvh max-h-none w-dvw max-w-none bg-transparent p-0 backdrop:bg-black/50 open:flex open:items-center open:justify-center"
+	class={[
+		'fixed inset-0 m-0 h-dvh max-h-none w-dvw max-w-none bg-transparent p-0 backdrop:bg-black/50 open:flex open:justify-center',
+		align === 'center' && 'open:items-center',
+		align === 'top' && 'open:items-start open:px-3 open:pt-[10vh]'
+	]}
 >
 	<div class={['relative animate-pop-in', className]}>
 		{@render children()}

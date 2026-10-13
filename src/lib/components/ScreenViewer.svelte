@@ -6,6 +6,7 @@
 		Copy,
 		Download,
 		ExternalLink,
+		TriangleAlert,
 		X
 	} from '@lucide/svelte';
 	import type { ScreenDetail } from '#lib/server/queries.ts';
@@ -109,10 +110,14 @@
 <Modal
 	label="Screen viewer"
 	{onclose}
-	class="flex h-[calc(100vh-48px)] w-[calc(100vw-48px)] max-w-[1840px] flex-col overflow-hidden rounded-[28px] bg-white shadow-2xl"
+	class="flex h-dvh w-dvw max-w-[1840px] flex-col overflow-hidden bg-white shadow-2xl sm:h-[calc(100dvh-48px)] sm:w-[calc(100vw-48px)] sm:rounded-[28px]"
 >
-	<header class="flex h-[76px] shrink-0 items-center gap-6 px-6">
-		<div class="flex min-w-0 flex-1 items-center gap-3">
+	<!-- Below 1024px the header wraps into two rows: the title and close button on top, then the
+	image switch and the actions. The `order-*` classes arrange that without duplicating markup. -->
+	<header
+		class="flex shrink-0 flex-wrap items-center gap-x-3 gap-y-3 px-4 py-3 sm:px-6 lg:h-[76px] lg:flex-nowrap lg:gap-x-6 lg:py-0"
+	>
+		<div class="order-1 flex min-w-0 flex-1 items-center gap-3">
 			<SiteIcon name={site.name} icon={site.icon} class="size-10 rounded-xl" />
 			<div class="min-w-0 leading-snug">
 				<h2 class="truncate text-[17px] font-semibold tracking-tight">
@@ -122,14 +127,29 @@
 			</div>
 		</div>
 
-		<div class="inline-flex rounded-full bg-neutral-100 p-1" role="group" aria-label="Image">
+		<button
+			type="button"
+			aria-label="Close"
+			onclick={onclose}
+			class="order-2 flex size-10 shrink-0 items-center justify-center rounded-full bg-neutral-100 transition-colors hover:bg-neutral-200 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-black lg:order-4"
+		>
+			<X class="size-[18px]" strokeWidth={2.25} />
+		</button>
+
+		<div class="order-3 basis-full lg:hidden" aria-hidden="true"></div>
+
+		<div
+			class="order-4 inline-flex rounded-full bg-neutral-100 p-1 lg:order-2"
+			role="group"
+			aria-label="Image"
+		>
 			{#each [['full', 'Full page'], ['viewport', 'Viewport']] as const as [value, label] (value)}
 				<button
 					type="button"
 					aria-pressed={mode === value}
 					onclick={() => (mode = value)}
 					class={[
-						'rounded-full px-4 py-1.5 text-[15px] font-medium transition-colors',
+						'rounded-full px-4 py-1.5 text-[15px] font-medium whitespace-nowrap transition-colors',
 						mode === value && 'bg-white shadow-[0_1px_2px_rgb(0_0_0/0.12)]',
 						mode !== value && 'text-neutral-500 hover:text-black'
 					]}
@@ -139,47 +159,49 @@
 			{/each}
 		</div>
 
-		<div class="flex flex-1 items-center justify-end gap-2">
+		<div
+			class="order-5 ml-auto flex items-center gap-2 lg:order-3 lg:ml-0 lg:flex-1 lg:justify-end"
+		>
 			<button
 				type="button"
 				onclick={copy}
-				class="inline-flex h-11 items-center justify-center gap-2 rounded-full border border-neutral-200 bg-white px-5 text-[15px] font-medium whitespace-nowrap transition-colors hover:bg-neutral-100"
+				aria-label="Copy image"
+				class="inline-flex h-11 items-center justify-center gap-2 rounded-full border border-neutral-200 bg-white px-5 text-[15px] font-medium whitespace-nowrap transition-colors hover:bg-neutral-100 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-black max-sm:w-11 max-sm:px-0"
 			>
 				{#if copyState === 'copied'}
-					<Check class="-ml-1 size-4" strokeWidth={2.5} /> Copied
+					<Check class="size-4 sm:-ml-1" strokeWidth={2.5} />
+					<span class="max-sm:hidden">Copied</span>
 				{:else if copyState === 'failed'}
-					Copy failed
+					<span class="max-sm:hidden">Copy failed</span>
+					<TriangleAlert class="size-4 sm:hidden" strokeWidth={2} />
 				{:else}
-					<Copy class="-ml-1 size-4" strokeWidth={2} /> Copy image
+					<Copy class="size-4 sm:-ml-1" strokeWidth={2} />
+					<span class="max-sm:hidden">Copy image</span>
 				{/if}
 			</button>
 			<a
 				href="/media/{imageKey}"
 				download="{site.slug}-{screen.id}-{mode}.webp"
-				class="inline-flex h-11 items-center justify-center gap-2 rounded-full border border-neutral-200 bg-white px-5 text-[15px] font-medium whitespace-nowrap transition-colors hover:bg-neutral-100"
+				aria-label="Download"
+				class="inline-flex h-11 items-center justify-center gap-2 rounded-full border border-neutral-200 bg-white px-5 text-[15px] font-medium whitespace-nowrap transition-colors hover:bg-neutral-100 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-black max-sm:w-11 max-sm:px-0"
 			>
-				<Download class="-ml-1 size-4" strokeWidth={2} /> Download
+				<Download class="size-4 sm:-ml-1" strokeWidth={2} />
+				<span class="max-sm:hidden">Download</span>
 			</a>
-			<button
-				type="button"
-				aria-label="Close"
-				onclick={onclose}
-				class="ml-1 flex size-10 items-center justify-center rounded-full bg-neutral-100 transition-colors hover:bg-neutral-200"
-			>
-				<X class="size-[18px]" strokeWidth={2.25} />
-			</button>
 		</div>
 	</header>
 
-	<div class="flex min-h-0 flex-1 flex-col lg:flex-row">
-		<div class="relative min-h-0 flex-1">
+	<!-- Wide screens put the info panel beside the image, each scrolling on its own. Below 1024px
+	the body scrolls as one column: a fixed-height image viewport, then the info panel. -->
+	<div class="flex min-h-0 flex-1 flex-col overflow-y-auto lg:flex-row lg:overflow-hidden">
+		<div class="relative h-[70dvh] shrink-0 lg:h-auto lg:min-h-0 lg:flex-1">
 			<!-- Focusable and autofocused so the arrow-up/down keys scroll the image right away. -->
 			<!-- svelte-ignore a11y_autofocus, a11y_no_noninteractive_tabindex -->
 			<div
 				bind:this={scroller}
 				tabindex="0"
 				autofocus
-				class="absolute inset-x-3 inset-y-0 overflow-y-auto rounded-t-3xl bg-neutral-100 px-6 pt-8 pb-12 outline-none lg:right-0"
+				class="absolute inset-x-3 inset-y-0 overflow-y-auto rounded-3xl bg-neutral-100 px-3 pt-4 pb-8 outline-none sm:px-6 sm:pt-8 sm:pb-12 lg:right-0 lg:rounded-t-3xl lg:rounded-b-none"
 			>
 				<!-- Natural CSS width caps the image so a 390px phone page is not blown up. -->
 				<div
@@ -217,7 +239,7 @@
 					aria-label="Previous screen"
 					data-sveltekit-replacestate
 					data-sveltekit-reset="false"
-					class="absolute top-1/2 left-6 flex size-12 -translate-y-1/2 items-center justify-center rounded-full bg-white shadow-[0_2px_12px_rgb(0_0_0/0.18)] transition-transform hover:scale-105"
+					class="absolute top-1/2 left-5 flex size-10 -translate-y-1/2 items-center justify-center rounded-full bg-white shadow-[0_2px_12px_rgb(0_0_0/0.18)] transition-transform hover:scale-105 sm:left-6 sm:size-12"
 				>
 					<ChevronLeft class="size-6" strokeWidth={2} />
 				</a>
@@ -228,14 +250,14 @@
 					aria-label="Next screen"
 					data-sveltekit-replacestate
 					data-sveltekit-reset="false"
-					class="absolute top-1/2 right-6 flex size-12 -translate-y-1/2 items-center justify-center rounded-full bg-white shadow-[0_2px_12px_rgb(0_0_0/0.18)] transition-transform hover:scale-105"
+					class="absolute top-1/2 right-5 flex size-10 -translate-y-1/2 items-center justify-center rounded-full bg-white shadow-[0_2px_12px_rgb(0_0_0/0.18)] transition-transform hover:scale-105 sm:right-6 sm:size-12"
 				>
 					<ChevronRight class="size-6" strokeWidth={2} />
 				</a>
 			{/if}
 		</div>
 
-		<aside class="max-h-[40%] shrink-0 overflow-y-auto px-6 pt-6 pb-8 lg:max-h-none lg:w-[380px]">
+		<aside class="shrink-0 px-4 pt-6 pb-8 sm:px-6 lg:w-[380px] lg:overflow-y-auto">
 			<dl class="grid grid-cols-[auto_1fr] gap-x-6 gap-y-3 text-[15px]">
 				<dt class="text-neutral-500">Page</dt>
 				<dd class="min-w-0">
@@ -297,7 +319,7 @@
 				<span class="text-[14px] text-neutral-500">{detail.elements.length} on this screen</span>
 			</div>
 			{#if detail.elements.length > 0}
-				<ul class="mt-3 grid grid-cols-2 gap-2.5">
+				<ul class="mt-3 grid grid-cols-2 gap-2.5 sm:grid-cols-4 lg:grid-cols-2">
 					{#each detail.elements as element (element.id)}
 						<li>
 							<button
@@ -323,7 +345,8 @@
 										src="/media/{element.media}"
 										alt=""
 										loading="lazy"
-										class="max-h-full max-w-full object-contain"
+										class="max-h-full max-w-full rounded-md bg-white object-contain shadow-[0_0_0_1px_rgb(0_0_0/0.06)]"
+										style:width="{element.rect.w}px"
 									/>
 								</span>
 								<span class="truncate px-1 text-[13px] leading-tight">

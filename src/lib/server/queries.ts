@@ -162,7 +162,15 @@ export async function listSites(search = ''): Promise<SiteListItem[]> {
 			.filter((id): id is string => id !== undefined)
 			.map((id) => new RecordId('screen', id))
 	);
-	const [thumbs, activeCrawls] = await Promise.all([
+	// A site whose start page failed has no cover although other pages were captured, so those
+	// viewports fall back to the first screen captured for them.
+	const missingCovers = sites.flatMap((site) =>
+		VIEWPORTS.filter((viewport) => site.cover[viewport] === undefined).map((viewport) => ({
+			site,
+			viewport
+		}))
+	);
+	const [thumbs, activeCrawls, fallbackThumbs] = await Promise.all([
 		coverIds.length === 0
 			? Promise.resolve([] as CoverThumb[])
 			: rows<CoverThumb>(
@@ -172,6 +180,16 @@ export async function listSites(search = ''): Promise<SiteListItem[]> {
 		rows<{ site: string; status: 'queued' | 'running' }>(
 			'SELECT site, status FROM crawl WHERE status IN $active',
 			{ active: ACTIVE_STATUSES }
+		),
+		Promise.all(
+			missingCovers.map(async ({ site, viewport }) => {
+				const [first] = await rows<CoverThumb>(
+					`SELECT id, width, height, media.thumb AS thumb FROM screen
+					 WHERE site = $site AND viewport = $viewport ORDER BY captured_at LIMIT 1`,
+					{ site: new RecordId('site', site.id), viewport }
+				);
+				return { siteId: site.id, viewport, thumb: first as CoverThumb | undefined };
+			})
 		)
 	]);
 
@@ -186,11 +204,98 @@ export async function listSites(search = ''): Promise<SiteListItem[]> {
 		const covers: SiteListItem['covers'] = {};
 		for (const viewport of VIEWPORTS) {
 			const id = site.cover[viewport];
-			const thumb = id === undefined ? undefined : thumbById.get(id);
+			const fallback = fallbackThumbs.find(
+				(candidate) => candidate.siteId === site.id && candidate.viewport === viewport
+			)?.thumb;
+			const thumb = (id === undefined ? undefined : thumbById.get(id)) ?? fallback;
 			if (thumb) covers[viewport] = thumb;
 		}
 		return { ...site, covers, activeStatus: statusBySite.get(site.id) };
 	});
+}
+
+// ---------------------------------------------------------------------------------------------
+// Search palette
+// ---------------------------------------------------------------------------------------------
+
+export interface SiteHit {
+	id: string;
+	slug: string;
+	name: string;
+	host: string;
+	icon?: string;
+	description?: string;
+}
+
+export interface ScreenHit {
+	id: string;
+	/** Site slug; site record ids are their slugs. */
+	site: string;
+	siteName: string;
+	viewport: Viewport;
+	path: string;
+	title: string;
+	thumb: string;
+	width: number;
+	height: number;
+}
+
+export interface ElementHit {
+	id: string;
+	site: string;
+	siteName: string;
+	screen: string;
+	viewport: Viewport;
+	kind: ElementKind;
+	name: string;
+	media: string;
+	rect: Rect;
+}
+
+export interface SearchResults {
+	sites: SiteHit[];
+	screens: ScreenHit[];
+	elements: ElementHit[];
+}
+
+const SEARCH_LIMITS = { sites: 5, screens: 8, elements: 8 };
+
+/**
+ * Everything the search palette shows for one query: sites by name, host and description,
+ * screens by title and path, and elements by name or kind. Case-insensitive substring match.
+ */
+export async function searchAll(search: string): Promise<SearchResults> {
+	const needle = search.trim().toLowerCase();
+	if (needle === '') return { sites: [], screens: [], elements: [] };
+
+	const [sites, screens, elements] = await Promise.all([
+		rows<SiteHit>(
+			`SELECT id, slug, name, host, icon, description FROM site
+			 WHERE string::lowercase(name) CONTAINS $needle
+				OR string::lowercase(host) CONTAINS $needle
+				OR string::lowercase(description ?? '') CONTAINS $needle
+			 ORDER BY name LIMIT $limit`,
+			{ needle, limit: SEARCH_LIMITS.sites }
+		),
+		// Pages sort before states ('page' < 'state') so the plain page wins over its variants.
+		rows<ScreenHit>(
+			`SELECT id, site, site.name AS siteName, viewport, path, title,
+				media.thumb AS thumb, width, height
+			 FROM screen
+			 WHERE string::lowercase(title) CONTAINS $needle
+				OR string::lowercase(path) CONTAINS $needle
+			 ORDER BY kind, seq LIMIT $limit`,
+			{ needle, limit: SEARCH_LIMITS.screens }
+		),
+		rows<ElementHit>(
+			`SELECT id, site, site.name AS siteName, screen, viewport, kind, name, media, rect
+			 FROM element
+			 WHERE string::lowercase(name) CONTAINS $needle OR kind CONTAINS $needle
+			 ORDER BY name DESC LIMIT $limit`,
+			{ needle, limit: SEARCH_LIMITS.elements }
+		)
+	]);
+	return { sites, screens, elements };
 }
 
 // ---------------------------------------------------------------------------------------------

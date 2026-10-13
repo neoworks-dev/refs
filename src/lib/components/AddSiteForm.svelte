@@ -38,7 +38,7 @@
 	<div class="flex flex-col gap-2.5">
 		<label
 			for="add-url"
-			class="text-center text-[40px] leading-[1.1] font-semibold tracking-[-0.045em]"
+			class="text-center text-[32px] leading-[1.1] font-semibold tracking-[-0.045em] text-balance sm:text-[40px]"
 		>
 			What's the URL?
 		</label>
@@ -73,10 +73,10 @@
 
 	<fieldset class="flex flex-col gap-3">
 		<legend class="mb-3 text-[15px] font-medium">Viewports</legend>
-		<div class="flex gap-3">
+		<div class="flex gap-2.5 sm:gap-3">
 			{#each [{ value: 'desktop', label: 'Desktop', size: '1440 × 900' }, { value: 'mobile', label: 'Mobile', size: '390 × 844' }] as viewport (viewport.value)}
 				<label
-					class="flex flex-1 cursor-pointer items-center gap-3 rounded-2xl border border-neutral-200 px-4 py-3.5 text-[15px] font-medium transition-colors has-[:checked]:border-black has-[:checked]:bg-neutral-50"
+					class="flex flex-1 cursor-pointer items-center gap-3 rounded-2xl border border-neutral-200 px-3.5 py-3.5 text-[15px] font-medium transition-colors focus-within:outline-2 focus-within:outline-offset-2 focus-within:outline-black has-[:checked]:border-black has-[:checked]:bg-neutral-50 sm:px-4"
 				>
 					<input
 						type="checkbox"
@@ -87,7 +87,9 @@
 					/>
 					<span class="flex flex-col leading-tight">
 						{viewport.label}
-						<span class="text-[13px] font-normal text-neutral-500">{viewport.size}</span>
+						<span class="text-[13px] font-normal whitespace-nowrap text-neutral-500"
+							>{viewport.size}</span
+						>
 					</span>
 				</label>
 			{/each}
