@@ -332,16 +332,16 @@ async def next_action(
         "visible, scroll to it first; the page structure may list elements that are off screen.\n"
         "- Call done as soon as the screenshot shows what the goal asks for, and do not undo it.\n"
         "- Never log in, pay, or submit personal data.\n"
-        f"{repetition_warning}\n"
-        "<observation>"
+        f"{repetition_warning}"
     )
+    # The screenshot comes first, and the instructions that would be a system message follow it,
+    # so this request starts exactly like the grounding request in `locate`. The model server
+    # then reuses its work on the image for the second request instead of reading it again.
     message = await chat(
         [
-            {"role": "system", "content": AGENT_SYSTEM_PROMPT},
             {"role": "user", "content": [
-                {"type": "text", "text": prompt},
                 {"type": "image_url", "image_url": {"url": data_uri}},
-                {"type": "text", "text": "</observation>"},
+                {"type": "text", "text": f"{AGENT_SYSTEM_PROMPT}\n\n{prompt}"},
             ]},
         ],
         response_format=json_schema_format("agent_action", AGENT_ACTION_SCHEMA),
