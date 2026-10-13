@@ -180,6 +180,8 @@ export async function carryOut(
 			if (isPersonalDataField(field)) {
 				return `"${action.element}" asks for personal data (${field.type} field "${field.text}")`;
 			}
+			// The text replaces what the field holds; typing after earlier text garbled searches.
+			await page.keyboard.press('ControlOrMeta+A');
 			await page.keyboard.type(action.text);
 			if (action.pressEnter) await page.keyboard.press('Enter');
 			return undefined;

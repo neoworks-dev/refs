@@ -38,6 +38,8 @@ def execute(page: Page, action: dict) -> None:
         page.mouse.click(action["x"], action["y"])
     elif kind == "type":
         page.mouse.click(action["x"], action["y"])
+        # The text replaces what the field holds; typing after earlier text garbled searches.
+        page.keyboard.press("ControlOrMeta+A")
         page.keyboard.type(action["text"])
         if action["press_enter"]:
             page.keyboard.press("Enter")

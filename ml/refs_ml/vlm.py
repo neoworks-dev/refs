@@ -63,8 +63,8 @@ HOLO_COORDINATE_RANGE = 1000
 GROUNDING_PROMPT = (
     "Localize an element on the GUI image according to the provided target and output a click "
     "position. You must output a valid JSON following the format: "
-    '{{"x": <integer in [0, {range}]>, "y": <integer in [0, {range}]>}}. Your target is: '
-    "{target}"
+    '{{"visible": <boolean>, "x": <integer in [0, {range}]>, "y": <integer in [0, {range}]>}}. '
+    "Set visible to false if the target is not shown in the image. Your target is: {target}"
 )
 
 # Holo's browser-agent cookbook prompt, with "act with your tools" changed to what happens here.
@@ -414,7 +414,8 @@ AGENT_ACTION_SCHEMA = {
 AGENT_ACTIONS_PROMPT = """\
 Actions you can take, one per step:
 - click: click an element, described by what it is and its visible text.
-- type: click an input field and type text into it, optionally pressing Enter.
+- type: click an input field and replace its content with text. The text is exactly what goes
+  into the field, never with a newline at the end; set press_enter to submit it.
 - scroll: scroll the page up or down.
 - back: go back to the previous page.
 - wait: wait for the page to finish loading or animating.
@@ -441,6 +442,12 @@ async def next_action(
         f"{number}. {step.action}" + (f" -> {step.result}" if step.result else "")
         for number, step in enumerate(recent_steps, start=len(history) - len(recent_steps) + 1)
     )
+    # Clicking something and nothing happening is the commonest way to get stuck, and the model
+    # tends to come back to the same dead control a few steps later, past the streak check below.
+    dead_actions = sorted({step.action for step in history if step.result == "nothing changed"})
+    dead_actions_warning = "".join(
+        f"- This changed nothing before, so don't do it again: {action}\n" for action in dead_actions
+    )
     # The wording of a repeated click varies, but a stuck page reports the same result each time.
     last_results = [step.result for step in history[-STUCK_STEPS_BEFORE_WARNING:]]
     repetition_warning = ""
@@ -461,35 +468,57 @@ async def next_action(
         "- Call done as soon as the screenshot shows what the goal asks for, and do not undo it.\n"
         "- Never log in, pay, or submit personal data.\n"
         f"{repetition_warning}"
+        f"{dead_actions_warning}"
     )
     # The screenshot comes first, and the instructions that would be a system message follow it,
     # so this request starts exactly like the grounding request in `locate`. The model server
     # then reuses its work on the image for the second request instead of reading it again.
-    message = await chat(
-        [
-            {"role": "user", "content": [
-                {"type": "image_url", "image_url": {"url": data_uri}},
-                {"type": "text", "text": f"{AGENT_SYSTEM_PROMPT}\n\n{prompt}"},
-            ]},
-        ],
-        response_format=json_schema_format("agent_action", AGENT_ACTION_SCHEMA),
-        max_tokens=600,
-    )  # fmt: skip
-    action = json.loads(message["content"])
-    if "element" in action:
-        action["x"], action["y"] = await locate(data_uri, (width, height), action["element"])
+    # The page structure lists elements that are off screen, and models click those despite the
+    # rule against it. When the element isn't in the screenshot, the model gets one more try with
+    # that pointed out; a second miss is clicked anyway, because the grounder can be wrong too.
+    for _attempt in range(2):
+        message = await chat(
+            [
+                {"role": "user", "content": [
+                    {"type": "image_url", "image_url": {"url": data_uri}},
+                    {"type": "text", "text": f"{AGENT_SYSTEM_PROMPT}\n\n{prompt}"},
+                ]},
+            ],
+            response_format=json_schema_format("agent_action", AGENT_ACTION_SCHEMA),
+            max_tokens=600,
+        )  # fmt: skip
+        action = json.loads(message["content"])
+        if action["action"] == "type":
+            # Models end the text with a newline (or an escaped "\\n") to mean Enter, which would
+            # be typed literally.
+            text = action["text"].rstrip("\n")
+            while text.endswith("\\n"):
+                text = text.removesuffix("\\n").rstrip("\n")
+            if text != action["text"]:
+                action["text"], action["press_enter"] = text, True
+        if "element" not in action:
+            return action
+        visible, action["x"], action["y"] = await locate(data_uri, (width, height), action["element"])
+        if visible:
+            return action
+        prompt += f"- {action['element']} is not visible in the screenshot. Scroll to it first.\n"
     return action
 
 
-async def locate(data_uri: str, size: tuple[int, int], target: str) -> tuple[int, int]:
-    """Finds where to click for a described element, in pixels of an image of the given `size`."""
+async def locate(data_uri: str, size: tuple[int, int], target: str) -> tuple[bool, int, int]:
+    """Finds where to click for a described element, in pixels of an image of the given `size`.
+
+    Also says whether the element is in the image at all, because a model that is asked for a
+    position always gives one.
+    """
     schema = {
         "type": "object",
         "properties": {
+            "visible": {"type": "boolean"},
             "x": {"type": "integer", "minimum": 0, "maximum": HOLO_COORDINATE_RANGE},
             "y": {"type": "integer", "minimum": 0, "maximum": HOLO_COORDINATE_RANGE},
         },
-        "required": ["x", "y"],
+        "required": ["visible", "x", "y"],
         "additionalProperties": False,
     }
     prompt = GROUNDING_PROMPT.format(range=HOLO_COORDINATE_RANGE, target=target)
@@ -500,8 +529,10 @@ async def locate(data_uri: str, size: tuple[int, int], target: str) -> tuple[int
         ]}],
         grounding=True,
         response_format=json_schema_format("click_point", schema),
-        max_tokens=30,
+        max_tokens=40,
     )  # fmt: skip
     point = json.loads(message["content"])
     width, height = size
-    return round(point["x"] / HOLO_COORDINATE_RANGE * width), round(point["y"] / HOLO_COORDINATE_RANGE * height)
+    x = round(point["x"] / HOLO_COORDINATE_RANGE * width)
+    y = round(point["y"] / HOLO_COORDINATE_RANGE * height)
+    return point["visible"], x, y
