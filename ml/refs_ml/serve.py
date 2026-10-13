@@ -12,7 +12,8 @@ Profiles:
 - `a100` is for a rented 80 GB card (A100 or H100): Qwen3.8-27B in FP8 does everything, next to
   the embedder. Everything runs on vLLM, which serves many requests at once, so several
   explorations can share the card. ml/runpod/ sets up a rented machine.
-- `a100-holo-grounding` is the same, with Holo3.1-4B pointing at elements instead, to compare.
+- `a100-holo-9b` has Holo3.1-9B do everything instead, to compare.
+- `a100-holo-grounding` is the same as `a100`, with Holo3.1-4B pointing at elements instead, to compare.
 """
 
 import argparse
@@ -112,6 +113,20 @@ PROFILES = {
         ),
         grounder=None,
         # 6 of 80 GB, about what the embedder gets on the small card.
+        embedding_memory_share=0.08,
+        embedding_eager=False,
+    ),
+    # Holo3.1-9B in bf16 (19 GB) does everything, to compare a model fine-tuned for driving a
+    # browser against the larger general Qwen3.8 on the evaluation in eval/.
+    "a100-holo-9b": Profile(
+        vlm=VllmModel(
+            repo="Hcompany/Holo-3.1-9B",
+            memory_share=0.70,
+            context_tokens=32768,
+            images_per_request=10,
+            extra_arguments=["--safetensors-load-strategy=prefetch"],
+        ),
+        grounder=None,
         embedding_memory_share=0.08,
         embedding_eager=False,
     ),
