@@ -173,7 +173,7 @@ def vllm_command(model: VllmModel, served_name: str, port: int) -> list[str]:
         # JSON allows whitespace between its parts, and constrained decoding lets the model take
         # that freedom: Qwen3.8 and Holo both got stuck writing newlines after a string until
         # they ran out of tokens, on 4 of 10 agent tasks. Compact JSON leaves no such way out.
-        "--structured-outputs-config", '{"disable_any_whitespace": true}',
+        "--structured-outputs-config", '{"backend": "xgrammar", "disable_any_whitespace": true}',
         *model.extra_arguments,
     ]  # fmt: skip
 
