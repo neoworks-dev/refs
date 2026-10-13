@@ -1,54 +1,45 @@
-# sv
+# Refs
 
-Everything you need to build a Svelte project, powered by [`sv`](https://github.com/sveltejs/cli).
+**Your own design reference library, collected by a browser that explores websites for you.**
 
-## Creating a project
+Galleries like Mobbin are great until the site you want to study isn't in them. Refs lets you build that kind of library yourself. You give it a website, and it browses the site the way a curious designer would: it opens the pages, tries the menus and tabs, and saves everything it sees. You end up with a clean, searchable collection of screens, sections and components you can come back to whenever you need inspiration.
 
-If you're seeing this, you've probably already done this step. Congrats!
+## What you get
 
-```sh
-# create a new project
-npx sv create my-app
-```
+- **Every page, captured properly.** Refs takes full-page screenshots on desktop and on mobile, waits for images to load, and clicks away cookie banners first.
+- **The pieces, not just the pages.** Heroes, pricing sections, navigation bars, buttons, forms and dialogs are cut out on their own, so you can compare them side by side.
+- **How it all connects.** Refs remembers which link or button led from one screen to the next, so you can follow a site the way a visitor moves through it.
+- **A library that's pleasant to browse.** Sites, screens and elements live in a calm, image-first interface made for looking at design.
+- **Yours, on your machine.** Everything is stored locally, and the AI parts run on your own GPU. No subscription, no upload, no account.
 
-To recreate this project with the same configuration:
+## Where it's going
 
-```sh
-# recreate this project
-bun x sv@1.1.1 create --template minimal --types ts --add tailwindcss="plugins:forms" prettier sveltekit-adapter="adapter:node" --install bun .
-```
+Refs is young, and we're building it in the open.
 
-## Adding features
+1. **Capture.** Explore a site, take the screenshots and cut out the elements. This is what we're finishing now.
+2. **Understanding.** A local vision model recognises what each page is, such as a pricing page or a signup screen, describes it, and makes everything searchable by what it looks like. You'll be able to type "dark hero with a product screenshot" and find it.
+3. **Flows.** The explorer works toward goals, like starting a free trial, and saves the journey as a flow you can step through.
+4. **Library.** Browse components across all your sites, save favourites into collections, and switch to a dark theme.
 
-Add features to your project with `sv add`:
+Refs only ever sees what a visitor sees. It never logs in, and it never clicks anything that could buy, delete or change something.
 
-```sh
-npx sv add
-```
+## Trying it out
 
-For example, to add Tailwind CSS:
-
-```sh
-npx sv add tailwindcss
-```
-
-## Developing
-
-Once you've created a project and installed dependencies with `npm install` (or `pnpm install` or `yarn`), start a development server:
+You'll need [Bun](https://bun.sh) and [Docker](https://www.docker.com).
 
 ```sh
-npm run dev
-
-# or start the server and open the app in a new browser tab
-npm run dev -- --open
+bun install
+bun run db:up      # start the database
+bun run dev        # open the library at http://localhost:5173
+bun run crawler    # in a second terminal, the explorer that picks up new sites
 ```
 
-## Building
+Then click **Add site**, paste a URL and watch the screens come in.
 
-To create a production version of your app:
+## Contributing
 
-```sh
-npm run build
-```
+Ideas, bug reports and pull requests are all welcome. Have a look at the [open issues](https://github.com/neoworks-dev/refs/issues) to see what's planned, or open a new one if something is missing. If you're writing code, [CLAUDE.md](CLAUDE.md) explains how the project is put together and the style we keep to.
 
-You can preview the production build with `npm run preview`.
+## License
+
+[MIT](LICENSE)

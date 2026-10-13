@@ -17,7 +17,9 @@ const { values, positionals } = parseArgs({
 
 function fail(message: string): never {
 	console.error(message);
-	console.error('usage: bun run crawl <url> [--viewport desktop|mobile|both] [--max-screens N] [--max-depth N]');
+	console.error(
+		'usage: bun run crawl <url> [--viewport desktop|mobile|both] [--max-screens N] [--max-depth N]'
+	);
 	process.exit(2);
 }
 
@@ -29,9 +31,14 @@ function parseLimit(name: string, raw: string | undefined): number | undefined {
 }
 
 if (positionals.length !== 1) fail('expected exactly one URL');
-if (!['desktop', 'mobile', 'both'].includes(values.viewport)) fail('--viewport must be desktop, mobile or both');
-const viewports: Viewport[] = values.viewport === 'both' ? VIEWPORTS : [values.viewport as Viewport];
-const limits = { maxScreens: parseLimit('max-screens', values['max-screens']), maxDepth: parseLimit('max-depth', values['max-depth']) };
+if (!['desktop', 'mobile', 'both'].includes(values.viewport))
+	fail('--viewport must be desktop, mobile or both');
+const viewports: Viewport[] =
+	values.viewport === 'both' ? VIEWPORTS : [values.viewport as Viewport];
+const limits = {
+	maxScreens: parseLimit('max-screens', values['max-screens']),
+	maxDepth: parseLimit('max-depth', values['max-depth'])
+};
 
 const shutdown = new AbortController();
 process.on('SIGINT', () => shutdown.abort());
@@ -53,3 +60,5 @@ for (const viewport of viewports) {
 	console.log(`${site.host} ${viewport}: ${JSON.stringify(counts[0])}`);
 }
 await db.close();
+// A browser that failed to close in time would otherwise keep the process alive.
+process.exit(0);

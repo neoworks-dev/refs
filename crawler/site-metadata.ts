@@ -19,10 +19,15 @@ const PNG_SIGNATURE = Buffer.from([0x89, 0x50, 0x4e, 0x47]);
  * on most home pages.
  */
 export function cleanSiteName(title: string, host: string): string {
-	const parts = title.split(TITLE_SEPARATOR).map((part) => part.trim()).filter(Boolean);
+	const parts = title
+		.split(TITLE_SEPARATOR)
+		.map((part) => part.trim())
+		.filter(Boolean);
 	if (parts.length === 0) return '';
 	const brand = bareHost(host).split('.')[0].replaceAll('-', '').toLowerCase();
-	const matching = parts.find((part) => part.toLowerCase().replaceAll(/[\s-]/g, '').includes(brand));
+	const matching = parts.find((part) =>
+		part.toLowerCase().replaceAll(/[\s-]/g, '').includes(brand)
+	);
 	return (matching ?? parts[0]).slice(0, MAX_NAME_LENGTH);
 }
 
@@ -34,11 +39,19 @@ function declaredSize(sizes: string): number {
 
 /** Icon URLs to try, best first: touch icons, then other icons by size, then /favicon.ico. */
 function iconCandidates(details: PageDetails, origin: string): string[] {
-	const bySizeDescending = (first: PageDetails['icons'][number], second: PageDetails['icons'][number]) =>
-		declaredSize(second.sizes) - declaredSize(first.sizes);
-	const touchIcons = details.icons.filter((icon) => icon.rel.includes('apple-touch-icon')).sort(bySizeDescending);
-	const otherIcons = details.icons.filter((icon) => !icon.rel.includes('apple-touch-icon')).sort(bySizeDescending);
-	return [...touchIcons, ...otherIcons].map((icon) => icon.href).concat(`${origin}/favicon.ico`);
+	const bySizeDescending = (
+		first: PageDetails['icons'][number],
+		second: PageDetails['icons'][number]
+	) => declaredSize(second.sizes) - declaredSize(first.sizes);
+	const touchIcons = details.icons
+		.filter((icon) => icon.rel.includes('apple-touch-icon'))
+		.sort(bySizeDescending);
+	const otherIcons = details.icons
+		.filter((icon) => !icon.rel.includes('apple-touch-icon'))
+		.sort(bySizeDescending);
+	const hrefs = [...touchIcons, ...otherIcons].map((icon) => icon.href);
+	// Inline `data:` icons and the like can't be fetched, and a link may be malformed.
+	return hrefs.filter((href) => /^https?:\/\//.test(href)).concat(`${origin}/favicon.ico`);
 }
 
 /** .ico files often embed a PNG; sharp can't read .ico itself, so pull the largest PNG out. */
@@ -52,7 +65,8 @@ function pngFromIco(data: Buffer): Buffer | undefined {
 		const size = data.readUInt32LE(directoryOffset + 8);
 		const offset = data.readUInt32LE(directoryOffset + 12);
 		const image = data.subarray(offset, offset + size);
-		if (image.subarray(0, 4).equals(PNG_SIGNATURE) && (!best || image.length > best.length)) best = image;
+		if (image.subarray(0, 4).equals(PNG_SIGNATURE) && (!best || image.length > best.length))
+			best = image;
 	}
 	return best;
 }

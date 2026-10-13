@@ -7,6 +7,7 @@ import { RecordId } from '#lib/server/surreal.ts';
 import type { Rect } from '#lib/types.ts';
 import {
 	captureScreen,
+	closeBrowser,
 	computeDomSig,
 	dHash,
 	hammingDistance,
@@ -89,7 +90,9 @@ export class CrawlContext {
 	/** Shows what the crawler is doing right now in the UI. */
 	async setActivity(activity: string): Promise<void> {
 		console.log(`[${this.siteId}/${this.job.viewport}] ${activity}`);
-		await this.db.query('UPDATE $id SET activity = $activity', { id: this.job.id, activity }).collect();
+		await this.db
+			.query('UPDATE $id SET activity = $activity', { id: this.job.id, activity })
+			.collect();
 	}
 
 	/** Persists the counters shown in the UI. */
@@ -109,11 +112,18 @@ export class CrawlContext {
 		const now = Date.now();
 		if (now - this.lastCancelCheck < CANCEL_CHECK_INTERVAL_MS) return;
 		this.lastCancelCheck = now;
-		if ((await getCrawlStatus(this.db, this.job.id)) === 'cancelled') throw new CrawlCancelled('cancelled');
+		if ((await getCrawlStatus(this.db, this.job.id)) === 'cancelled')
+			throw new CrawlCancelled('cancelled');
 	}
 
 	/** Records how the crawler got from one screen to another. */
-	async createAction(from: string, to: string, kind: 'navigate' | 'click', label: string, rect?: Rect): Promise<void> {
+	async createAction(
+		from: string,
+		to: string,
+		kind: 'navigate' | 'click',
+		label: string,
+		rect?: Rect
+	): Promise<void> {
 		await this.db
 			.query('RELATE $from->action->$to CONTENT $content', {
 				from: new RecordId('screen', from),
@@ -161,12 +171,16 @@ async function runCrawl(db: Surreal, job: CrawlJob, signal: AbortSignal): Promis
 
 	// Buttons stored by earlier crawls of this site, so they aren't stored again.
 	const [storedButtons] = await db
-		.query("SELECT name, rect FROM element WHERE site = $site AND viewport = $viewport AND kind = 'button'", {
-			site: job.site,
-			viewport: job.viewport
-		})
+		.query(
+			"SELECT name, rect FROM element WHERE site = $site AND viewport = $viewport AND kind = 'button'",
+			{
+				site: job.site,
+				viewport: job.viewport
+			}
+		)
 		.collect<[{ name: string; rect: Rect }[]]>();
-	for (const button of storedButtons) ctx.knownButtons.add(buttonKey(job.viewport, button.name, button.rect));
+	for (const button of storedButtons)
+		ctx.knownButtons.add(buttonKey(job.viewport, button.name, button.rect));
 
 	const { browser, context, userAgent } = await openBrowser(job.viewport);
 	try {
@@ -180,7 +194,7 @@ async function runCrawl(db: Surreal, job: CrawlJob, signal: AbortSignal): Promis
 		const robots = await fetchRobots(new URL(ctx.site.url).origin, userAgent);
 		await new PageCrawler(ctx, page, robots).run();
 	} finally {
-		await browser.close();
+		await closeBrowser(browser);
 	}
 }
 
@@ -314,7 +328,12 @@ class PageCrawler {
 
 		// Redirects can land on a page we already have, or leave the site.
 		const finalUrl = normalizeUrl(page.url());
-		if (!finalUrl || !isSameSite(finalUrl, ctx.site.host)) return;
+		if (!finalUrl || !isSameSite(finalUrl, ctx.site.host)) {
+			// Without a start page there is nothing to crawl, so say where it went instead of
+			// silently ending with "could not capture any page".
+			if (isStartPage) throw new Error(`The start page redirected off the site, to ${page.url()}`);
+			return;
+		}
 		const wasRedirected = urlKey(finalUrl) !== urlKey(candidate.url);
 		if (wasRedirected && this.frontier.isKnown(finalUrl)) return;
 		this.frontier.markKnown(finalUrl);
@@ -323,16 +342,30 @@ class PageCrawler {
 		const domSig = await computeDomSig(page);
 		if (!isStartPage && (this.pagesPerDomSig.get(domSig) ?? 0) >= MAX_PAGES_PER_DOM_SIG) return;
 
-		const screen = await captureScreen({ page, ctx, kind: 'page', url: finalUrl, depth: candidate.depth, domSig });
+		const screen = await captureScreen({
+			page,
+			ctx,
+			kind: 'page',
+			url: finalUrl,
+			depth: candidate.depth,
+			domSig
+		});
 		const shape = pathShape(finalUrl);
 		this.pagesPerShape.set(shape, (this.pagesPerShape.get(shape) ?? 0) + 1);
 		this.pagesPerDomSig.set(domSig, (this.pagesPerDomSig.get(domSig) ?? 0) + 1);
 		if (candidate.fromScreen) {
-			await ctx.createAction(candidate.fromScreen, screen.id, 'navigate', candidate.label, candidate.rect);
+			await ctx.createAction(
+				candidate.fromScreen,
+				screen.id,
+				'navigate',
+				candidate.label,
+				candidate.rect
+			);
 		}
 
 		if (isStartPage) await this.recordSiteDetails(screen);
-		if (candidate.depth < ctx.job.max_depth) await this.queueLinks(screen, finalUrl, candidate.depth);
+		if (candidate.depth < ctx.job.max_depth)
+			await this.queueLinks(screen, finalUrl, candidate.depth);
 
 		// States may use only part of max_screens, so exploration can't starve the real pages.
 		const stateBudget = Math.max(1, Math.floor(ctx.job.max_screens * MAX_STATE_SHARE));
@@ -364,7 +397,8 @@ class PageCrawler {
 			if (!url || urlKey(url) === urlKey(pageUrl)) continue;
 			if (!isSameSite(url, this.ctx.site.host) || !isCrawlable(url)) continue;
 			// A link only gets an edge rect if it lies inside the (capped) full-page image.
-			const rect = link.rect && link.rect.y + link.rect.h <= screen.fullHeight ? link.rect : undefined;
+			const rect =
+				link.rect && link.rect.y + link.rect.h <= screen.fullHeight ? link.rect : undefined;
 			this.frontier.add({
 				url,
 				depth: depth + 1,
@@ -417,7 +451,9 @@ class PageCrawler {
 				await this.clickAndCapture(target, toClick, capturedHashes);
 			} catch (error) {
 				if (error instanceof CrawlCancelled) throw error;
-				console.warn(`  click '${clickTarget.name}' failed: ${error instanceof Error ? error.message : error}`);
+				console.warn(
+					`  click '${clickTarget.name}' failed: ${error instanceof Error ? error.message : error}`
+				);
 			}
 		}
 	}
@@ -426,12 +462,19 @@ class PageCrawler {
 	 * Clicks a control and works out what happened: it navigated (a link we hadn't seen, queued),
 	 * it changed the page (captured as a state) or nothing visible happened (ignored).
 	 */
-	private async clickAndCapture(target: ExplorationTarget, clickTarget: ClickTarget, capturedHashes: string[]): Promise<void> {
+	private async clickAndCapture(
+		target: ExplorationTarget,
+		clickTarget: ClickTarget,
+		capturedHashes: string[]
+	): Promise<void> {
 		const { ctx, page } = this;
 		await page.evaluate(() => window.pageInspector!.snapshotVisible());
 		// A real mouse click at the control's centre, as a user would: it also triggers hover menus.
 		// (Page coordinates equal viewport coordinates because the page is scrolled to the top.)
-		await page.mouse.click(clickTarget.rect.x + clickTarget.rect.w / 2, clickTarget.rect.y + clickTarget.rect.h / 2);
+		await page.mouse.click(
+			clickTarget.rect.x + clickTarget.rect.w / 2,
+			clickTarget.rect.y + clickTarget.rect.h / 2
+		);
 		await page.waitForTimeout(AFTER_CLICK_MS);
 
 		if (urlKey(page.url()) !== urlKey(target.url)) {
@@ -454,7 +497,8 @@ class PageCrawler {
 		const changedLook = hammingDistance(target.screen.imageHash, imageHash) >= STATE_HASH_DISTANCE;
 		const openedPanel = newPanels.some((panel) => panel.hasPanelRole);
 		if (!openedPanel && !changedLook) return;
-		if (capturedHashes.some((seen) => hammingDistance(seen, imageHash) < SAME_STATE_HASH_DISTANCE)) return;
+		if (capturedHashes.some((seen) => hammingDistance(seen, imageHash) < SAME_STATE_HASH_DISTANCE))
+			return;
 		capturedHashes.push(imageHash);
 
 		const state = await captureScreen({

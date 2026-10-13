@@ -38,7 +38,9 @@ export async function ensureSite(db: Surreal, input: string): Promise<SiteRow> {
 	if (!parsed || !url) throw new Error(`not a valid http(s) URL: ${input}`);
 
 	const host = bareHost(parsed.hostname);
-	const [existing] = await db.query('SELECT * FROM site WHERE host = $host', { host }).collect<[SiteRow[]]>();
+	const [existing] = await db
+		.query('SELECT * FROM site WHERE host = $host', { host })
+		.collect<[SiteRow[]]>();
 	if (existing.length > 0) return existing[0];
 
 	const slug = slugFromHost(host);
@@ -102,11 +104,17 @@ export async function claimNextCrawl(db: Surreal): Promise<CrawlJob | undefined>
 }
 
 export async function getCrawlStatus(db: Surreal, crawlId: RecordId): Promise<string | undefined> {
-	const [statuses] = await db.query('SELECT VALUE status FROM $id', { id: crawlId }).collect<[string[]]>();
+	const [statuses] = await db
+		.query('SELECT VALUE status FROM $id', { id: crawlId })
+		.collect<[string[]]>();
 	return statuses[0];
 }
 
-export async function finishCrawl(db: Surreal, crawlId: RecordId, outcome: { error?: string }): Promise<void> {
+export async function finishCrawl(
+	db: Surreal,
+	crawlId: RecordId,
+	outcome: { error?: string }
+): Promise<void> {
 	await db
 		.query(
 			`UPDATE $id SET status = $status, error = $error, finished_at = time::now()
@@ -118,7 +126,11 @@ export async function finishCrawl(db: Surreal, crawlId: RecordId, outcome: { err
 
 /** Puts a crawl that was interrupted by a shutdown back in the queue. */
 export async function requeueCrawl(db: Surreal, crawlId: RecordId): Promise<void> {
-	await db.query("UPDATE $id SET status = 'queued', activity = NONE WHERE status = 'running'", { id: crawlId }).collect();
+	await db
+		.query("UPDATE $id SET status = 'queued', activity = NONE WHERE status = 'running'", {
+			id: crawlId
+		})
+		.collect();
 }
 
 /**
@@ -126,7 +138,9 @@ export async function requeueCrawl(db: Surreal, crawlId: RecordId): Promise<void
  * doesn't leave duplicate screens behind. Media directories are removed too.
  */
 export async function purgeCrawlData(db: Surreal, mediaRoot: string, job: CrawlJob): Promise<void> {
-	const [screens] = await db.query('SELECT id FROM screen WHERE crawl = $crawl', { crawl: job.id }).collect<[{ id: RecordId }[]]>();
+	const [screens] = await db
+		.query('SELECT id FROM screen WHERE crawl = $crawl', { crawl: job.id })
+		.collect<[{ id: RecordId }[]]>();
 	if (screens.length === 0) return;
 
 	for (const screen of screens) {

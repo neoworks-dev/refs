@@ -9,7 +9,9 @@ const POLL_INTERVAL_MS = 2000;
 const shutdown = new AbortController();
 const stop = (signalName: string) => {
 	if (shutdown.signal.aborted) process.exit(1);
-	console.log(`${signalName} received, stopping after cleaning up the current crawl (again to force)`);
+	console.log(
+		`${signalName} received, stopping after cleaning up the current crawl (again to force)`
+	);
 	shutdown.abort();
 };
 process.on('SIGINT', () => stop('SIGINT'));
@@ -32,3 +34,5 @@ while (!shutdown.signal.aborted) {
 }
 
 await db.close();
+// A browser that failed to close in time would otherwise keep the process alive.
+process.exit(0);

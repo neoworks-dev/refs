@@ -33,11 +33,36 @@ export async function connect(config: SurrealConfig): Promise<Surreal> {
 		database: config.database,
 		authentication: { username: config.username, password: config.password }
 	});
-	await db.query(`DEFINE NAMESPACE IF NOT EXISTS ${config.namespace}`).collect();
-	await db.query(`DEFINE DATABASE IF NOT EXISTS ${config.database}`).collect();
-	await db.use({ namespace: config.namespace, database: config.database });
-	await db.query(await readFile(SCHEMA, 'utf8')).collect();
+	await applySchema(db, config);
 	return db;
+}
+
+/** How often applying the schema is retried when other processes apply it at the same time. */
+const SCHEMA_ATTEMPTS = 10;
+
+/**
+ * Creates the namespace and database if needed and applies `db/schema.surql`. The app and one or more crawler workers all do this on startup, and
+ * two of them doing it at the same moment make SurrealDB report a transaction conflict. The
+ * definitions are idempotent, so the loser simply tries again a moment later.
+ */
+async function applySchema(db: Surreal, config: SurrealConfig): Promise<void> {
+	const schema = await readFile(SCHEMA, 'utf8');
+	for (let attempt = 1; attempt <= SCHEMA_ATTEMPTS; attempt++) {
+		try {
+			await db.query(`DEFINE NAMESPACE IF NOT EXISTS ${config.namespace}`).collect();
+			await db.query(`DEFINE DATABASE IF NOT EXISTS ${config.database}`).collect();
+			await db.use({ namespace: config.namespace, database: config.database });
+			await db.query(schema).collect();
+			return;
+		} catch (error) {
+			const isConflict = error instanceof Error && /transaction conflict/i.test(error.message);
+			if (!isConflict || attempt === SCHEMA_ATTEMPTS) throw error;
+			// Exponential backoff with random jitter, so retrying processes spread out instead of
+			// colliding again in lockstep.
+			const delayMs = Math.min(2000, 100 * 2 ** attempt) * (0.5 + Math.random());
+			await new Promise((resolve) => setTimeout(resolve, delayMs));
+		}
+	}
 }
 
 /**

@@ -47,14 +47,14 @@ Kit 3 differs from v2 in ways that are easy to get wrong from memory. Check `nod
 
 1. Capture without AI: the crawler and the browsing UI. This is the current milestone.
 2. The models: page classification and descriptions, embeddings, and semantic search.
-3. AI exploration: goal-directed browsing, logged-in sessions, and flows.
+3. AI exploration: goal-directed browsing and flows.
 4. The element library across sites, collections, and dark mode.
 
-The models run locally on a 16 GB GPU behind vLLM. Holo3.1-9B drives the browser and classifies screens, Qwen3-VL-Embedding-2B produces embeddings, and OmniParser v2.0.1 detects elements only where the DOM gives us nothing usable.
+The models run locally on a 16 GB GPU. Holo3.1-4B, a fine-tune of Qwen3.5, drives the browser and classifies screens. If it proves too weak on our screens, Qwen3.8-27B at IQ3_S on llama.cpp replaces it. Qwen3-VL-Embedding-2B produces embeddings, and OmniParser v2.0.1 detects elements only where the DOM gives us nothing usable.
 
 Flows will be cut out of the action graph by structure first. A flow starts at a main navigation click and continues while the URL stays under one prefix, the same dialog or form advances, or the clicked labels are words like "Continue". The model then names each flow with a category from a fixed list, a free-text title and a caption per step. Goal-directed exploration produces flows that are labelled by construction.
 
-Logged-in sites use a session captured once by hand in a visible browser and saved as Playwright `storageState`, encrypted, per site. Logged-in crawls are read-only, use dedicated test accounts, and mask the account's personal data before taking screenshots. Don't change the schema for this until it's asked for.
+Crawls never log in. Refs only captures what a site shows to a visitor who isn't signed in, so there are no accounts, sessions or stored credentials.
 
 ## How we work
 

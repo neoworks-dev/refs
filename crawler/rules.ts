@@ -58,11 +58,22 @@ export function normalizeUrl(input: string | URL, base?: string | URL): string |
 /** Identity used to detect that two URLs are the same page (ignores scheme and www.). */
 export function urlKey(url: string): string {
 	const parsed = new URL(url);
-	return bareHost(parsed.hostname) + (parsed.port ? `:${parsed.port}` : '') + parsed.pathname + parsed.search;
+	return (
+		bareHost(parsed.hostname) +
+		(parsed.port ? `:${parsed.port}` : '') +
+		parsed.pathname +
+		parsed.search
+	);
 }
 
+/**
+ * Whether a URL belongs to the site. Subdomains count as part of it: many sites send visitors from
+ * the bare domain to a subdomain (spotify.com goes to open.spotify.com), and docs or app subdomains
+ * are part of the same product. The screen budget and template caps keep large subdomains in check.
+ */
 export function isSameSite(url: string, host: string): boolean {
-	return bareHost(new URL(url).hostname) === host;
+	const urlHost = bareHost(new URL(url).hostname);
+	return urlHost === host || urlHost.endsWith(`.${host}`);
 }
 
 /** Path + query, as stored in `screen.path`. */
@@ -157,7 +168,8 @@ export class Robots {
 		let best: RobotsRule | undefined;
 		for (const rule of this.rules) {
 			if (!rule.pattern.test(pathAndQuery)) continue;
-			if (!best || rule.length > best.length || (rule.length === best.length && rule.allow)) best = rule;
+			if (!best || rule.length > best.length || (rule.length === best.length && rule.allow))
+				best = rule;
 		}
 		return best === undefined || best.allow;
 	}
@@ -181,7 +193,9 @@ export async function fetchRobots(origin: string, userAgent: string): Promise<Ro
 		return Robots.parse(await response.text());
 	} catch (error) {
 		// Network failure or timeout. robots.txt is advisory and optional, so crawl rather than give up.
-		console.warn(`robots.txt unavailable (${error instanceof Error ? error.message : error}), assuming allowed`);
+		console.warn(
+			`robots.txt unavailable (${error instanceof Error ? error.message : error}), assuming allowed`
+		);
 		return Robots.allowAll();
 	}
 }

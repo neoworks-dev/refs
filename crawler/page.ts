@@ -55,7 +55,9 @@ export interface NewPanel {
 
 /** Tags that are never part of what the user sees. */
 const HIDDEN_TAGS = new Set(
-	'SCRIPT STYLE NOSCRIPT TEMPLATE LINK META HEAD TITLE BR WBR SOURCE TRACK DATALIST AREA BASE'.split(' ')
+	'SCRIPT STYLE NOSCRIPT TEMPLATE LINK META HEAD TITLE BR WBR SOURCE TRACK DATALIST AREA BASE'.split(
+		' '
+	)
 );
 
 function isVisible(element: Element): boolean {
@@ -88,7 +90,9 @@ function accessibleName(element: Element): string {
 	if (ariaLabel) return ariaLabel;
 
 	const labelledByIds = element.getAttribute('aria-labelledby')?.split(/\s+/) ?? [];
-	const labelledBy = cleanText(labelledByIds.map((id) => document.getElementById(id)?.textContent ?? '').join(' '));
+	const labelledBy = cleanText(
+		labelledByIds.map((id) => document.getElementById(id)?.textContent ?? '').join(' ')
+	);
 	if (labelledBy) return labelledBy;
 
 	if (element instanceof HTMLInputElement && /^(button|submit)$/.test(element.type)) {
@@ -123,7 +127,9 @@ function colorAlpha(color: string): number {
 // --- dom_sig skeleton ----------------------------------------------------------------------
 
 /** Inline text formatting changes with the copy, not with the layout, so the skeleton ignores it. */
-const INLINE_TEXT_TAGS = new Set('B I EM STRONG SMALL MARK SUB SUP U S CODE ABBR TIME SPAN'.split(' '));
+const INLINE_TEXT_TAGS = new Set(
+	'B I EM STRONG SMALL MARK SUB SUP U S CODE ABBR TIME SPAN'.split(' ')
+);
 /** Rendered as a single box: their internals are not page layout. */
 const LEAF_TAGS = new Set(['SVG', 'IMG', 'PICTURE', 'VIDEO', 'CANVAS', 'IFRAME', 'INPUT']);
 /** Deep enough to capture the layout, shallow enough to ignore widget internals. */
@@ -140,7 +146,8 @@ function skeletonOf(element: Element, depth: number): string {
 		if (HIDDEN_TAGS.has(child.tagName) || !isVisible(child)) continue;
 		// A <span> that wraps other elements is layout; one that only holds text is formatting.
 		const isFormatting =
-			INLINE_TEXT_TAGS.has(child.tagName) && (child.tagName !== 'SPAN' || child.children.length === 0);
+			INLINE_TEXT_TAGS.has(child.tagName) &&
+			(child.tagName !== 'SPAN' || child.children.length === 0);
 		if (isFormatting) continue;
 
 		const childSkeleton = skeletonOf(child, depth + 1);
@@ -166,7 +173,8 @@ function pageDetails(): PageDetails {
 	return {
 		title: cleanText(document.title, 300),
 		siteName: metaContent('meta[property="og:site_name"]'),
-		description: metaContent('meta[name="description"]') || metaContent('meta[property="og:description"]'),
+		description:
+			metaContent('meta[name="description"]') || metaContent('meta[property="og:description"]'),
 		icons: [...iconLinks].map((link) => ({
 			href: link.href,
 			rel: link.rel.toLowerCase(),
@@ -277,7 +285,12 @@ function clickTargets(): ClickTarget[] {
 			if (element.tagName === 'A' && element.hasAttribute('href') && !opensSomething) continue;
 
 			// Any submit inside a form is off limits. A <button> without a type attribute is a submit.
-			if (element instanceof HTMLButtonElement && element.form !== null && element.type === 'submit') continue;
+			if (
+				element instanceof HTMLButtonElement &&
+				element.form !== null &&
+				element.type === 'submit'
+			)
+				continue;
 
 			const box = element.getBoundingClientRect();
 			const inFirstViewport =
@@ -298,9 +311,9 @@ const DIALOG_SELECTOR = '[role="dialog"], [role="alertdialog"], [aria-modal="tru
 const MENU_SELECTOR = '[role="menu"], [role="listbox"]';
 /** A newly visible element covering this much of the viewport is a backdrop or full-screen overlay. */
 const OVERLAY_VIEWPORT_RATIO = 0.85;
-/** Tooltips, badges and tiny reveals are not worth a screen. */
+/** Tooltips, badges and tiny reveals are not worth a screen; 80px also excludes a header bar that merely re-rendered. */
 const MIN_PANEL_WIDTH = 80;
-const MIN_PANEL_HEIGHT = 40;
+const MIN_PANEL_HEIGHT = 80;
 const MAX_PANELS = 3;
 
 let elementsVisibleBeforeClick = new WeakSet<Element>();
@@ -334,7 +347,9 @@ function newPanels(): NewPanel[] {
 		const viewportArea = window.innerWidth * window.innerHeight;
 		if (rootBox.width * rootBox.height >= viewportArea * OVERLAY_VIEWPORT_RATIO) {
 			const dialog = root.matches(panelRoles) ? root : root.querySelector(panelRoles);
-			const hasContent = root.querySelector('a, button, input, img, svg') || cleanText((root as HTMLElement).innerText);
+			const hasContent =
+				root.querySelector('a, button, input, img, svg') ||
+				cleanText((root as HTMLElement).innerText);
 			if (dialog && isVisible(dialog)) panel = dialog;
 			else if (!hasContent) continue;
 		}
@@ -355,7 +370,9 @@ function newPanels(): NewPanel[] {
 	}
 
 	const area = (panel: NewPanel) => panel.rect.w * panel.rect.h;
-	return [...panels.values()].sort((first, second) => area(second) - area(first)).slice(0, MAX_PANELS);
+	return [...panels.values()]
+		.sort((first, second) => area(second) - area(first))
+		.slice(0, MAX_PANELS);
 }
 
 // --- UI elements -----------------------------------------------------------------------------
@@ -390,7 +407,8 @@ function unwrap(start: Element): Element {
 		const children = flowChildren(element);
 		if (children.length !== 1) break;
 		const fillsParent =
-			children[0].getBoundingClientRect().height >= element.getBoundingClientRect().height * WRAPPER_FILL_RATIO;
+			children[0].getBoundingClientRect().height >=
+			element.getBoundingClientRect().height * WRAPPER_FILL_RATIO;
 		if (!fillsParent) break;
 		element = children[0];
 	}
@@ -462,7 +480,11 @@ function hasButtonBorder(style: CSSStyleDeclaration): boolean {
 	return ['top', 'right', 'bottom', 'left'].every((side) => {
 		const width = parseFloat(style.getPropertyValue(`border-${side}-width`));
 		const borderStyle = style.getPropertyValue(`border-${side}-style`);
-		return width >= 1 && borderStyle !== 'none' && colorAlpha(style.getPropertyValue(`border-${side}-color`)) > MIN_BORDER_ALPHA;
+		return (
+			width >= 1 &&
+			borderStyle !== 'none' &&
+			colorAlpha(style.getPropertyValue(`border-${side}-color`)) > MIN_BORDER_ALPHA
+		);
 	});
 }
 
@@ -475,14 +497,20 @@ function findElements(): { pageHeight: number; elements: FoundElement[] } {
 	};
 
 	for (const section of findSections(document.body, 0, viewportWidth)) {
-		add('section', section, firstHeadingText(section) || cleanText((section as HTMLElement).innerText, 60));
+		add(
+			'section',
+			section,
+			firstHeadingText(section) || cleanText((section as HTMLElement).innerText, 60)
+		);
 	}
 
 	for (const header of document.querySelectorAll('header, [role="banner"]')) {
-		if (isVisible(header) && !header.parentElement?.closest(SECTIONING_ANCESTORS)) add('header', header, '');
+		if (isVisible(header) && !header.parentElement?.closest(SECTIONING_ANCESTORS))
+			add('header', header, '');
 	}
 	for (const footer of document.querySelectorAll('footer, [role="contentinfo"]')) {
-		if (isVisible(footer) && !footer.parentElement?.closest(SECTIONING_ANCESTORS)) add('footer', footer, '');
+		if (isVisible(footer) && !footer.parentElement?.closest(SECTIONING_ANCESTORS))
+			add('footer', footer, '');
 	}
 	const visibleNavs = [...document.querySelectorAll('nav, [role="navigation"]')].filter(isVisible);
 	for (const nav of visibleNavs.slice(0, MAX_NAVS)) {
@@ -495,7 +523,8 @@ function findElements(): { pageHeight: number; elements: FoundElement[] } {
 		add('nav', nav, cleanText(nav.getAttribute('aria-label')) || firstLinks.join(' / '));
 	}
 
-	const buttonSelector = 'button, [role="button"], input[type="button"], input[type="submit"], a[href]';
+	const buttonSelector =
+		'button, [role="button"], input[type="button"], input[type="submit"], a[href]';
 	for (const button of document.querySelectorAll(buttonSelector)) {
 		if (!isVisible(button)) continue;
 		const name = accessibleName(button);
@@ -510,7 +539,12 @@ function findElements(): { pageHeight: number; elements: FoundElement[] } {
 			// A link is only a button when it is dressed like one: fill or border, padding and a
 			// button-like height. Everything else is text.
 			const padding = parseFloat(style.paddingLeft) + parseFloat(style.paddingRight);
-			if (!dressedAsButton || padding < MIN_LINK_BUTTON_PADDING || box.height < MIN_LINK_BUTTON_HEIGHT) continue;
+			if (
+				!dressedAsButton ||
+				padding < MIN_LINK_BUTTON_PADDING ||
+				box.height < MIN_LINK_BUTTON_HEIGHT
+			)
+				continue;
 		} else if (box.width < MIN_BUTTON_WIDTH || box.height < MIN_BUTTON_HEIGHT) {
 			continue;
 		}
@@ -518,8 +552,20 @@ function findElements(): { pageHeight: number; elements: FoundElement[] } {
 	}
 
 	// Text-like fields only: checkboxes, radios and buttons aren't worth a crop of their own.
-	const nonTextTypes = ['hidden', 'checkbox', 'radio', 'submit', 'button', 'image', 'reset', 'file', 'range', 'color'];
-	const inputSelector = 'input' + nonTextTypes.map((type) => `:not([type="${type}"])`).join('') + ', select, textarea';
+	const nonTextTypes = [
+		'hidden',
+		'checkbox',
+		'radio',
+		'submit',
+		'button',
+		'image',
+		'reset',
+		'file',
+		'range',
+		'color'
+	];
+	const inputSelector =
+		'input' + nonTextTypes.map((type) => `:not([type="${type}"])`).join('') + ', select, textarea';
 	for (const input of document.querySelectorAll<HTMLInputElement>(inputSelector)) {
 		if (!isVisible(input)) continue;
 		const label = input.id ? document.querySelector(`label[for="${CSS.escape(input.id)}"]`) : null;
@@ -532,14 +578,26 @@ function findElements(): { pageHeight: number; elements: FoundElement[] } {
 	}
 
 	for (const form of document.querySelectorAll('form')) {
-		if (isVisible(form)) add('form', form, cleanText(form.getAttribute('aria-label')) || firstHeadingText(form));
+		if (isVisible(form))
+			add('form', form, cleanText(form.getAttribute('aria-label')) || firstHeadingText(form));
 	}
 	for (const table of document.querySelectorAll('table, [role="table"], [role="grid"]')) {
-		if (!isVisible(table) || table.querySelectorAll('tr, [role="row"]').length < MIN_TABLE_ROWS) continue;
-		add('table', table, cleanText(table.querySelector('caption')?.textContent) || cleanText(table.getAttribute('aria-label')));
+		if (!isVisible(table) || table.querySelectorAll('tr, [role="row"]').length < MIN_TABLE_ROWS)
+			continue;
+		add(
+			'table',
+			table,
+			cleanText(table.querySelector('caption')?.textContent) ||
+				cleanText(table.getAttribute('aria-label'))
+		);
 	}
 	for (const dialog of document.querySelectorAll(DIALOG_SELECTOR)) {
-		if (isVisible(dialog)) add('dialog', dialog, cleanText(dialog.getAttribute('aria-label')) || firstHeadingText(dialog));
+		if (isVisible(dialog))
+			add(
+				'dialog',
+				dialog,
+				cleanText(dialog.getAttribute('aria-label')) || firstHeadingText(dialog)
+			);
 	}
 	for (const menu of document.querySelectorAll(MENU_SELECTOR)) {
 		if (isVisible(menu)) add('menu', menu, cleanText(menu.getAttribute('aria-label')));

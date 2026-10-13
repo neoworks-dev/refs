@@ -32,7 +32,7 @@ export const newId = customAlphabet('0123456789abcdefghijklmnopqrstuvwxyz', 16);
 // --- browser ---------------------------------------------------------------------------------
 
 /** Device pixel ratio for every capture. Crops are taken from the full-page image at this scale. */
-const DPR = 2;
+const DEVICE_SCALE_FACTOR = 2;
 /** Mobile is Playwright's iPhone 15 Pro viewport. */
 export const VIEWPORT_SIZES: Record<Viewport, { width: number; height: number }> = {
 	desktop: { width: 1440, height: 900 },
@@ -92,9 +92,13 @@ let pageInspectorBundle: Promise<string> | undefined;
 function pageInspectorScript(): Promise<string> {
 	if (pageInspectorBundle === undefined) {
 		const entry = fileURLToPath(new URL('./page.ts', import.meta.url));
-		pageInspectorBundle = execFileAsync(process.execPath, ['build', entry, '--target', 'browser', '--format', 'iife'], {
-			maxBuffer: 10 * 1024 * 1024
-		}).then((result) => result.stdout);
+		pageInspectorBundle = execFileAsync(
+			process.execPath,
+			['build', entry, '--target', 'browser', '--format', 'iife'],
+			{
+				maxBuffer: 10 * 1024 * 1024
+			}
+		).then((result) => result.stdout);
 	}
 	return pageInspectorBundle;
 }
@@ -103,6 +107,11 @@ function pageInspectorScript(): Promise<string> {
 export async function openBrowser(viewport: Viewport): Promise<BrowserSession> {
 	const browser = await chromium.launch({
 		headless: true,
+		// The worker handles SIGINT/SIGTERM itself so it can requeue the crawl before exiting;
+		// Playwright's own handlers would kill the browser mid-crawl and exit the process.
+		handleSIGINT: false,
+		handleSIGTERM: false,
+		handleSIGHUP: false,
 		args: [
 			// Headless Chrome announces itself in navigator.webdriver, which some sites answer with a bot wall.
 			'--disable-blink-features=AutomationControlled',
@@ -119,10 +128,14 @@ export async function openBrowser(viewport: Viewport): Promise<BrowserSession> {
 		// settings but drop `defaultBrowserType`, and use a Chrome user agent since we run chromium.
 		userAgent = `Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) CriOS/${chromeMajorVersion}.0.0.0 Mobile/15E148 Safari/604.1`;
 		const { defaultBrowserType: _webkit, ...iphone } = devices['iPhone 15 Pro'];
-		contextOptions = { ...iphone, deviceScaleFactor: DPR, userAgent };
+		contextOptions = { ...iphone, deviceScaleFactor: DEVICE_SCALE_FACTOR, userAgent };
 	} else {
 		userAgent = `Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${chromeMajorVersion}.0.0.0 Safari/537.36`;
-		contextOptions = { viewport: VIEWPORT_SIZES.desktop, deviceScaleFactor: DPR, userAgent };
+		contextOptions = {
+			viewport: VIEWPORT_SIZES.desktop,
+			deviceScaleFactor: DEVICE_SCALE_FACTOR,
+			userAgent
+		};
 	}
 
 	// Service workers would bypass the request blocking below.
@@ -132,12 +145,36 @@ export async function openBrowser(viewport: Viewport): Promise<BrowserSession> {
 	await context.route('**/*', (route) => {
 		const request = route.request();
 		const { hostname } = new URL(request.url());
-		const isBlockedHost = BLOCKED_HOSTS.some((blocked) => hostname === blocked || hostname.endsWith(`.${blocked}`));
+		const isBlockedHost = BLOCKED_HOSTS.some(
+			(blocked) => hostname === blocked || hostname.endsWith(`.${blocked}`)
+		);
 		// Video is heavy and never visible in a still screenshot anyway.
 		if (request.resourceType() === 'media' || isBlockedHost) return route.abort();
 		return route.continue();
 	});
 	return { browser, context, userAgent };
+}
+
+const BROWSER_CLOSE_TIMEOUT_MS = 10_000;
+
+/**
+ * Closes the browser without waiting forever. Closing takes milliseconds, but under Bun the close
+ * promise has been seen to never settle after the chrome process had already exited, and a hung
+ * close would leave the crawl (and the worker) stuck in 'running'.
+ */
+export async function closeBrowser(browser: Browser): Promise<void> {
+	let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
+	const timedOut = new Promise<void>((resolve) => {
+		timeoutHandle = setTimeout(() => {
+			console.warn('  browser did not close in time, moving on');
+			resolve();
+		}, BROWSER_CLOSE_TIMEOUT_MS);
+	});
+	try {
+		await Promise.race([browser.close(), timedOut]);
+	} finally {
+		clearTimeout(timeoutHandle);
+	}
 }
 
 // --- cookie banner ---------------------------------------------------------------------------
@@ -165,7 +202,8 @@ const ACCEPT_LABEL =
 	/^(accept( all)?( cookies)?( (&|and) close)?|i accept|i agree|agree( and (close|continue))?|allow all( cookies)?|allow cookies|allow|got it|ok|okay|alle akzeptieren|akzeptieren|zustimmen|einverstanden)$/i;
 
 /** Consent managers that render in an iframe usually give it away in the iframe URL. */
-const CONSENT_IFRAME_URL = /consent|cookie|privacy|gdpr|cmp|sp_message|onetrust|trustarc|usercentrics|didomi/i;
+const CONSENT_IFRAME_URL =
+	/consent|cookie|privacy|gdpr|cmp|sp_message|onetrust|trustarc|usercentrics|didomi/i;
 
 /** How long a banner may take to appear after load, on the first page only. */
 const BANNER_APPEAR_TIMEOUT_MS = 3000;
@@ -199,8 +237,10 @@ function acceptButtonLocator(frame: Frame, isMainFrame: boolean): Locator {
 	const knownButton = frame.locator(KNOWN_ACCEPT_BUTTONS);
 	// In the page itself the button has to sit inside something that calls itself a cookie banner,
 	// or any "OK" button would match. A consent iframe's whole document is the banner.
-	if (isMainFrame) return knownButton.or(frame.locator(COOKIE_BANNER).getByRole('button', { name: ACCEPT_LABEL }));
-	if (CONSENT_IFRAME_URL.test(frame.url())) return knownButton.or(frame.getByRole('button', { name: ACCEPT_LABEL }));
+	if (isMainFrame)
+		return knownButton.or(frame.locator(COOKIE_BANNER).getByRole('button', { name: ACCEPT_LABEL }));
+	if (CONSENT_IFRAME_URL.test(frame.url()))
+		return knownButton.or(frame.getByRole('button', { name: ACCEPT_LABEL }));
 	return knownButton;
 }
 
@@ -212,9 +252,12 @@ function acceptButtonLocator(frame: Frame, isMainFrame: boolean): Locator {
  * Banners are often injected after load. On the first page of a crawl, pass `waitForBanner` to give
  * one time to appear; later pages have the consent cookie, so a banner is there right away or not at all.
  */
-export async function acceptCookieBanner(page: Page, options: { waitForBanner: boolean }): Promise<boolean> {
+export async function acceptCookieBanner(
+	page: Page,
+	options: { waitForBanner: boolean }
+): Promise<boolean> {
 	const deadline = Date.now() + (options.waitForBanner ? BANNER_APPEAR_TIMEOUT_MS : 0);
-	for (;;) {
+	while (true) {
 		const acceptButton = await findAcceptButton(page);
 		if (acceptButton) return await clickUntilGone(acceptButton);
 		if (Date.now() >= deadline) return false;
@@ -249,8 +292,15 @@ const MAX_SCROLL_STEPS = 25;
  * gone, lazy content loaded by scrolling through the page, fonts ready, scrolled back to the top.
  * Returns the main-document response.
  */
-export async function loadPage(page: Page, url: string, options: { waitForBanner: boolean }): Promise<Response | null> {
-	const response = await page.goto(url, { waitUntil: 'domcontentloaded', timeout: PAGE_TIMEOUT_MS });
+export async function loadPage(
+	page: Page,
+	url: string,
+	options: { waitForBanner: boolean }
+): Promise<Response | null> {
+	const response = await page.goto(url, {
+		waitUntil: 'domcontentloaded',
+		timeout: PAGE_TIMEOUT_MS
+	});
 	try {
 		await page.waitForLoadState('networkidle', { timeout: NETWORK_IDLE_CAP_MS });
 	} catch (error) {
@@ -259,10 +309,10 @@ export async function loadPage(page: Page, url: string, options: { waitForBanner
 	await acceptCookieBanner(page, options);
 
 	const { height: stepHeight } = page.viewportSize() ?? VIEWPORT_SIZES.desktop;
-	await page.evaluate(
-		([step, maxSteps]) => window.pageInspector!.scrollThrough(step, maxSteps),
-		[stepHeight, MAX_SCROLL_STEPS] as const
-	);
+	await page.evaluate(([step, maxSteps]) => window.pageInspector!.scrollThrough(step, maxSteps), [
+		stepHeight,
+		MAX_SCROLL_STEPS
+	] as const);
 	await page.evaluate(() => document.fonts.ready);
 	await page.waitForTimeout(FINAL_SETTLE_MS);
 	return response;
@@ -355,19 +405,23 @@ export async function captureScreen(request: CaptureRequest): Promise<CapturedSc
 	const found = await page.evaluate(() => window.pageInspector!.findElements());
 	const viewportPng = await viewportScreenshot(page);
 	// Taller pages are cut off at the cap with a clip, because webp can't encode huge images.
-	const clip = found.pageHeight > MAX_FULL_HEIGHT ? { x: 0, y: 0, width, height: MAX_FULL_HEIGHT } : undefined;
+	const clip =
+		found.pageHeight > MAX_FULL_HEIGHT ? { x: 0, y: 0, width, height: MAX_FULL_HEIGHT } : undefined;
 	const fullPng = await page.screenshot({ ...SCREENSHOT_OPTIONS, fullPage: true, clip });
 
 	const [viewportWebp, fullWebp, thumbWebp, fullMetadata, imageHash] = await Promise.all([
 		sharp(viewportPng).webp({ quality: WEBP_QUALITY }).toBuffer(),
 		sharp(fullPng).webp({ quality: WEBP_QUALITY }).toBuffer(),
-		sharp(viewportPng).resize({ width: THUMB_WIDTH, withoutEnlargement: true }).webp({ quality: WEBP_QUALITY }).toBuffer(),
+		sharp(viewportPng)
+			.resize({ width: THUMB_WIDTH, withoutEnlargement: true })
+			.webp({ quality: WEBP_QUALITY })
+			.toBuffer(),
 		sharp(fullPng).metadata(),
 		dHash(viewportPng)
 	]);
 	// Measured from the image rather than the DOM: the page may overflow sideways, or be capped.
-	const fullWidth = Math.round((fullMetadata.width ?? 0) / DPR);
-	const fullHeight = Math.round((fullMetadata.height ?? 0) / DPR);
+	const fullWidth = Math.round((fullMetadata.width ?? 0) / DEVICE_SCALE_FACTOR);
+	const fullHeight = Math.round((fullMetadata.height ?? 0) / DEVICE_SCALE_FACTOR);
 
 	const media = {
 		viewport: `${keyPrefix}/viewport.webp`,
@@ -434,11 +488,13 @@ async function storeElements(
 
 	for (const element of elements) {
 		const { x, y, w, h } = element.rect;
-		const left = Math.max(0, Math.floor((x - CROP_PADDING) * DPR));
-		const top = Math.max(0, Math.floor((y - CROP_PADDING) * DPR));
-		const right = Math.min(info.width, Math.ceil((x + w + CROP_PADDING) * DPR));
-		const bottom = Math.min(info.height, Math.ceil((y + h + CROP_PADDING) * DPR));
-		const crop = await sharp(data, { raw: { width: info.width, height: info.height, channels: info.channels } })
+		const left = Math.max(0, Math.floor((x - CROP_PADDING) * DEVICE_SCALE_FACTOR));
+		const top = Math.max(0, Math.floor((y - CROP_PADDING) * DEVICE_SCALE_FACTOR));
+		const right = Math.min(info.width, Math.ceil((x + w + CROP_PADDING) * DEVICE_SCALE_FACTOR));
+		const bottom = Math.min(info.height, Math.ceil((y + h + CROP_PADDING) * DEVICE_SCALE_FACTOR));
+		const crop = await sharp(data, {
+			raw: { width: info.width, height: info.height, channels: info.channels }
+		})
 			.extract({ left, top, width: Math.max(1, right - left), height: Math.max(1, bottom - top) })
 			.webp({ quality: WEBP_QUALITY })
 			.toBuffer();

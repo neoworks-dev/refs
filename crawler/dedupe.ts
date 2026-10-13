@@ -17,11 +17,24 @@ const MAX_INPUTS_PER_SCREEN = 8;
 const MAX_SECTIONS_PER_SCREEN = 24;
 
 /** When two rects are duplicates, the kind later in this list wins. */
-const SPECIFICITY: ElementKind[] = ['section', 'footer', 'header', 'nav', 'form', 'table', 'menu', 'dialog', 'input', 'button'];
+const SPECIFICITY: ElementKind[] = [
+	'section',
+	'footer',
+	'header',
+	'nav',
+	'form',
+	'table',
+	'menu',
+	'dialog',
+	'input',
+	'button'
+];
 
 export function intersectionOverUnion(first: Rect, second: Rect): number {
-	const overlapWidth = Math.min(first.x + first.w, second.x + second.w) - Math.max(first.x, second.x);
-	const overlapHeight = Math.min(first.y + first.h, second.y + second.h) - Math.max(first.y, second.y);
+	const overlapWidth =
+		Math.min(first.x + first.w, second.x + second.w) - Math.max(first.x, second.x);
+	const overlapHeight =
+		Math.min(first.y + first.h, second.y + second.h) - Math.max(first.y, second.y);
 	if (overlapWidth <= 0 || overlapHeight <= 0) return 0;
 	const intersection = overlapWidth * overlapHeight;
 	return intersection / (first.w * first.h + second.w * second.h - intersection);
@@ -29,7 +42,10 @@ export function intersectionOverUnion(first: Rect, second: Rect): number {
 
 /** Identity of a button across pages: its label and size, so 500 "Learn more" buttons collapse to one. */
 export function buttonKey(viewport: Viewport, name: string, rect: Rect): string {
-	const normalizedName = name.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, ' ').trim();
+	const normalizedName = name
+		.toLowerCase()
+		.replace(/[^\p{L}\p{N}]+/gu, ' ')
+		.trim();
 	// Rounded to 2px: the same button measures slightly differently across pages.
 	return `${viewport}|${normalizedName}|${Math.round(rect.w / 2)}x${Math.round(rect.h / 2)}`;
 }
@@ -73,11 +89,16 @@ export function selectElements(options: SelectOptions): FoundElement[] {
 
 		// State screens keep the panels and what is new relative to the page underneath.
 		const alreadyOnPage = baseline?.some(
-			(base) => base.kind === element.kind && intersectionOverUnion(base.rect, element.rect) > SAME_AS_BASE_IOU
+			(base) =>
+				base.kind === element.kind &&
+				intersectionOverUnion(base.rect, element.rect) > SAME_AS_BASE_IOU
 		);
 		if (alreadyOnPage && !isPanel) continue;
 
-		visible.push({ element: { ...element, rect: { x: left, y: top, w: right - left, h: bottom - top } }, isPanel });
+		visible.push({
+			element: { ...element, rect: { x: left, y: top, w: right - left, h: bottom - top } },
+			isPanel
+		});
 	}
 
 	// Near-duplicate rects: keep the more specific kind (a <nav> over the <section> around it).
@@ -86,23 +107,38 @@ export function selectElements(options: SelectOptions): FoundElement[] {
 		.sort((first, second) => SPECIFICITY.indexOf(second.kind) - SPECIFICITY.indexOf(first.kind));
 	const distinct: FoundElement[] = [];
 	for (const element of bySpecificity) {
-		if (distinct.some((kept) => intersectionOverUnion(kept.rect, element.rect) > DUPLICATE_IOU)) continue;
+		if (distinct.some((kept) => intersectionOverUnion(kept.rect, element.rect) > DUPLICATE_IOU))
+			continue;
 		distinct.push(element);
 	}
 
-	const reading = (first: FoundElement, second: FoundElement) => first.rect.y - second.rect.y || first.rect.x - second.rect.x;
+	const reading = (first: FoundElement, second: FoundElement) =>
+		first.rect.y - second.rect.y || first.rect.x - second.rect.x;
 	const selected = [
 		...distinct.filter((element) => !['button', 'input', 'section'].includes(element.kind)),
-		...distinct.filter((element) => element.kind === 'section').sort(reading).slice(0, MAX_SECTIONS_PER_SCREEN),
-		...distinct.filter((element) => element.kind === 'input').sort(reading).slice(0, MAX_INPUTS_PER_SCREEN),
-		...selectButtons(distinct.filter((element) => element.kind === 'button'), options)
+		...distinct
+			.filter((element) => element.kind === 'section')
+			.sort(reading)
+			.slice(0, MAX_SECTIONS_PER_SCREEN),
+		...distinct
+			.filter((element) => element.kind === 'input')
+			.sort(reading)
+			.slice(0, MAX_INPUTS_PER_SCREEN),
+		...selectButtons(
+			distinct.filter((element) => element.kind === 'button'),
+			options
+		)
 	];
 	return selected.sort(reading);
 }
 
 /** New buttons only (not stored for this site yet), call-to-action looking ones first. */
 function selectButtons(buttons: FoundElement[], options: SelectOptions): FoundElement[] {
-	const ordered = [...buttons].sort((first, second) => Number(Boolean(second.looksLikeButton)) - Number(Boolean(first.looksLikeButton)) || first.rect.y - second.rect.y);
+	const ordered = [...buttons].sort(
+		(first, second) =>
+			Number(Boolean(second.looksLikeButton)) - Number(Boolean(first.looksLikeButton)) ||
+			first.rect.y - second.rect.y
+	);
 	const selected: FoundElement[] = [];
 	for (const button of ordered) {
 		if (selected.length >= MAX_BUTTONS_PER_SCREEN) break;
