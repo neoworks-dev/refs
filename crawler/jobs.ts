@@ -151,7 +151,7 @@ export async function purgeCrawlData(db: Surreal, mediaRoot: string, job: CrawlJ
 	}
 	await db
 		.query(
-			`DELETE element WHERE screen IN (SELECT VALUE id FROM screen WHERE crawl = $crawl);
+			`DELETE element WHERE crawl = $crawl;
 			DELETE action WHERE crawl = $crawl;
 			DELETE screen WHERE crawl = $crawl;
 			UPDATE $crawl SET screens = 0, elements = 0`,

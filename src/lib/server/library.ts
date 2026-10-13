@@ -72,13 +72,14 @@ const CAPTURED_STATUSES: CrawlStatus[] = ['done', 'running'];
  * The crawl whose screens are shown for each site and viewport. A recrawl adds new screens next to
  * the old ones, so only the newest crawl that captured something counts, preferring one that
  * finished or is running over a cancelled or failed partial one. Without this a recrawl would show
- * every page twice. Pass `site` (a slug) to look at a single site.
+ * every page twice. Pass `site` (a slug) to look at a single site. "Captured something" is read
+ * from the crawl's screen counter, because a subquery on `screen` would run once per crawl.
  */
 export async function sourceCrawls(database: Surreal, site?: string): Promise<SourceCrawl[]> {
 	const crawls = await rows<SourceCrawl>(
 		database,
 		`SELECT id, site, viewport, status FROM crawl
-		 WHERE id IN (SELECT VALUE crawl FROM screen) ${site === undefined ? '' : 'AND site = $site'}
+		 WHERE screens > 0 ${site === undefined ? '' : 'AND site = $site'}
 		 ORDER BY created_at DESC`,
 		site === undefined ? {} : { site: new RecordId('site', site) }
 	);
@@ -158,17 +159,21 @@ export interface ElementCriteria {
 }
 
 /**
- * WHERE conditions and variables for elements that match `criteria`, restricted to elements of
- * screens in `crawls`. Elements carry their site and viewport themselves, so those two are
- * filtered directly; the page path has to go through the screen.
+ * WHERE conditions and variables for elements that match `criteria`, restricted to `crawls`.
+ * Elements carry their crawl, site and viewport themselves; only the page path goes through the
+ * screen. A subquery on `screen` here would run once per element.
  */
 export function elementConditions(criteria: ElementCriteria, crawls: RecordId[]): Conditions {
-	const screens = screenConditions({ site: criteria.site, path: criteria.path }, crawls);
-	const conditions = [
-		`screen IN (SELECT VALUE id FROM screen WHERE ${screens.conditions.join(' AND ')})`
-	];
-	const variables: Record<string, unknown> = { ...screens.variables };
-	if (criteria.site !== undefined) conditions.push('site = $site');
+	const conditions = ['crawl IN $crawls'];
+	const variables: Record<string, unknown> = { crawls };
+	if (criteria.site !== undefined) {
+		conditions.push('site = $site');
+		variables.site = new RecordId('site', criteria.site);
+	}
+	if (criteria.path !== undefined) {
+		conditions.push('screen.path = $path');
+		variables.path = criteria.path;
+	}
 	if (criteria.viewport !== undefined) {
 		conditions.push('viewport = $viewport');
 		variables.viewport = criteria.viewport;

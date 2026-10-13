@@ -145,6 +145,7 @@ export interface Screen {
 export interface UiElement {
 	id: string;
 	site: string;
+	crawl: string;
 	screen: string;
 	viewport: Viewport;
 	kind: ElementKind;

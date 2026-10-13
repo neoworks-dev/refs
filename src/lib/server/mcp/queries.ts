@@ -230,7 +230,7 @@ async function summariseSites(database: Surreal, sites: SiteRow[]): Promise<Site
 		rows<{ site: string; count: number }>(
 			database,
 			`SELECT site, count() AS count FROM element
-			 WHERE screen IN (SELECT VALUE id FROM screen WHERE crawl IN $crawls)
+			 WHERE crawl IN $crawls
 				AND site IN $sites GROUP BY site`,
 			{ crawls, sites: siteIds }
 		),

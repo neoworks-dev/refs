@@ -608,6 +608,7 @@ async function storeElements(
 				id: new RecordId('element', elementId),
 				content: {
 					site: ctx.job.site,
+					crawl: ctx.job.id,
 					screen,
 					viewport: ctx.job.viewport,
 					kind: element.kind,

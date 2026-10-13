@@ -87,6 +87,9 @@ DEFINE INDEX IF NOT EXISTS screen_embedding ON screen FIELDS embedding HNSW DIME
 DEFINE TABLE OVERWRITE element SCHEMAFULL;
 DEFINE FIELD OVERWRITE site ON element TYPE record<site>;
 DEFINE FIELD OVERWRITE screen ON element TYPE record<screen>;
+-- The crawl of `screen`, copied here because filtering elements through their screen made every
+-- library query scan all screens once per element (12 s at 2000 elements).
+DEFINE FIELD OVERWRITE crawl ON element TYPE record<crawl>;
 DEFINE FIELD OVERWRITE viewport ON element TYPE string ASSERT $value IN ['desktop', 'mobile'];
 DEFINE FIELD OVERWRITE kind ON element TYPE string
 	ASSERT $value IN ['section', 'header', 'footer', 'nav', 'button', 'input', 'form', 'dialog', 'menu', 'table'];
@@ -104,6 +107,7 @@ DEFINE FIELD OVERWRITE label ON element TYPE option<string>;
 DEFINE FIELD OVERWRITE embedding ON element TYPE option<array<float>>;
 DEFINE FIELD OVERWRITE captured_at ON element TYPE datetime DEFAULT time::now() READONLY;
 DEFINE INDEX IF NOT EXISTS element_screen ON element FIELDS screen;
+DEFINE INDEX IF NOT EXISTS element_crawl ON element FIELDS crawl, kind;
 DEFINE INDEX IF NOT EXISTS element_site ON element FIELDS site, viewport, kind;
 DEFINE INDEX IF NOT EXISTS element_embedding ON element FIELDS embedding HNSW DIMENSION 1024 DIST COSINE;
 

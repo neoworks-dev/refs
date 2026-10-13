@@ -128,7 +128,7 @@ export async function enrichCrawl(
 		return result.vector;
 	}
 
-	const sectionsOfCrawl = `kind = 'section' AND screen IN (SELECT VALUE id FROM screen WHERE crawl = $crawl)`;
+	const sectionsOfCrawl = `kind = 'section' AND crawl = $crawl`;
 	const [unclassified, unembeddedScreens, sectionsWithoutLabel, unembeddedSections, unnamedFlows] =
 		await db
 			.query(
