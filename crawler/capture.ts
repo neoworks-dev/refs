@@ -230,6 +230,38 @@ async function findAcceptButton(page: Page): Promise<Locator | undefined> {
 		const acceptButton = acceptButtonLocator(frame, frame === page.mainFrame()).first();
 		if (await isVisibleIfAttached(acceptButton)) return acceptButton;
 	}
+	return await findFloatingNoticeButton(page.mainFrame());
+}
+
+/** What a consent notice talks about, when its markup doesn't say "cookie" anywhere. */
+const CONSENT_NOTICE_TEXT = /cookie|tracking|consent|privacy|datenschutz/i;
+
+/**
+ * Custom banners often have no cookie-related id, class or label. Vercel's is a plain floating box
+ * saying "This site uses tracking technologies". So also accept an "accept" button whose fixed or
+ * sticky container talks about cookies, tracking or consent. Being fixed is what tells a banner
+ * apart from an "Accept" button in the normal page content.
+ */
+async function findFloatingNoticeButton(frame: Frame): Promise<Locator | undefined> {
+	const candidates = await frame.getByRole('button', { name: ACCEPT_LABEL }).all();
+	for (const candidate of candidates) {
+		if (!(await isVisibleIfAttached(candidate))) continue;
+		const isInFloatingConsentNotice = await candidate.evaluate((button, noticeText) => {
+			// The nearest fixed or sticky ancestor is the floating box the button belongs to.
+			for (
+				let node = button.parentElement;
+				node && node !== document.body;
+				node = node.parentElement
+			) {
+				const { position } = getComputedStyle(node);
+				if (position === 'fixed' || position === 'sticky') {
+					return new RegExp(noticeText, 'i').test(node.textContent ?? '');
+				}
+			}
+			return false;
+		}, CONSENT_NOTICE_TEXT.source);
+		if (isInFloatingConsentNotice) return candidate;
+	}
 	return undefined;
 }
 
@@ -313,6 +345,8 @@ export async function loadPage(
 		stepHeight,
 		MAX_SCROLL_STEPS
 	] as const);
+	// Some banners only appear after a delay or once the page is scrolled, so look once more.
+	await acceptCookieBanner(page, { waitForBanner: false });
 	await page.evaluate(() => document.fonts.ready);
 	await page.waitForTimeout(FINAL_SETTLE_MS);
 	return response;
