@@ -15,6 +15,34 @@ PAGE_TYPES = [
     "contact", "careers", "legal", "error", "other",
 ]  # fmt: skip
 
+# What a flow is about, for browsing the library by flow type across sites. It follows Mobbin's
+# flow tree (onboarding, logging in, checkout, searching, filtering and sorting, ...), adapted to
+# websites: Mobbin's app flows such as "booking a home" or "verifying identity" become the
+# visitor's goals on a marketing or shop site. "other" is the honest answer for a run of pages
+# that only belong together by section.
+#
+# The model reads the descriptions, because a bare name like "exploring_features" is too easy to
+# use for any run of marketing pages, and they decide between near neighbours.
+FLOW_CATEGORY_DESCRIPTIONS = {
+    "onboarding": "first-run setup after signing up: welcome steps, preferences, invitations",
+    "signing_up": "creating an account or starting a free trial: registration forms",
+    "logging_in": "signing in, password reset and verification steps",
+    "checkout": "cart, shipping, payment and order confirmation",
+    "subscribing": "choosing a plan and paying for it or upgrading",
+    "pricing_and_plans": "comparing prices, plans and tiers",
+    "searching": "typing a query and looking at the results",
+    "filtering_and_sorting": "narrowing or ordering a list with filters, tabs or sort controls",
+    "browsing_products": "looking through products, offers, deals, recipes or listings, and opening one",
+    "reading_content": "reading articles, blog posts, documentation or guides",
+    "exploring_features": "learning what a product does, page by page: product, solution and feature pages",
+    "contacting": "reaching the company: contact, sales or demo request forms",
+    "getting_help": "support, help center, FAQ and status pages",
+    "customer_stories": "case studies, testimonials and customer lists",
+    "settings": "account, profile or preference settings",
+    "other": "none of the above",
+}
+FLOW_CATEGORIES = list(FLOW_CATEGORY_DESCRIPTIONS)
+
 # Labels per element kind. The kinds are the ones in db/schema.surql, and every list ends with
 # "other" so the model always has an honest answer when nothing fits.
 ELEMENT_LABELS = {
@@ -41,6 +69,22 @@ ElementKind = Literal[
 class ScreenClassification(BaseModel):
     page_type: str
     description: str
+    confidence: float
+
+
+class FlowStepInput(BaseModel):
+    """One step of a flow as the caller knows it: the page, and the click that led there."""
+
+    url: str
+    # Missing on the first step, which nothing led to.
+    action_label: str = ""
+
+
+class FlowNaming(BaseModel):
+    category: str
+    title: str
+    # One per screenshot that was sent, in order.
+    captions: list[str]
     confidence: float
 
 

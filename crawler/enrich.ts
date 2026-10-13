@@ -1,7 +1,8 @@
 // Runs the captured screens and section crops of a crawl through the model service (ml/): page
-// type and description per screen, a label per section, and an embedding for both. Resumable,
-// because every pass only picks up what has no result yet, so it backfills crawls from before the
-// models existed and carries on where an interrupted run stopped.
+// type and description per screen, a label per section, an embedding for both, and a category,
+// title and step captions per flow. Resumable, because every pass only picks up what has no
+// result yet, so it backfills crawls from before the models existed and carries on where an
+// interrupted run stopped.
 //
 // `bun crawler/enrich.ts [site-slug]` enriches the current crawls of one site, or of every site.
 import type { Surreal } from 'surrealdb';
@@ -32,6 +33,16 @@ interface ScreenToEnrich {
 	url: string;
 	title: string;
 	image: string;
+}
+
+interface FlowToName {
+	id: RecordId;
+	/** The steps as stored, so naming only adds captions and leaves screens and actions alone. */
+	steps: { screen: RecordId; action?: RecordId; caption?: string }[];
+	urls: string[];
+	images: string[];
+	/** Label of the click that led to each step; the first step has none. */
+	labels: (string | undefined)[];
 }
 
 interface SectionToEnrich {
@@ -89,8 +100,9 @@ async function runPass<Item extends { id: RecordId }>(
 
 /**
  * Fills in what the models contribute to one crawl: `page_type` and `description` of its screens,
- * `label` of its sections, and `embedding` of both. Only items without a result are sent, so it is
- * safe to call again on a finished or half-enriched crawl.
+ * `label` of its sections, `embedding` of both, and `category`, `title` and step captions of its
+ * flows. Only items without a result are sent, so it is safe to call again on a finished or
+ * half-enriched crawl. A flow that already has a category is never renamed.
  */
 export async function enrichCrawl(
 	db: Surreal,
@@ -117,19 +129,25 @@ export async function enrichCrawl(
 	}
 
 	const sectionsOfCrawl = `kind = 'section' AND screen IN (SELECT VALUE id FROM screen WHERE crawl = $crawl)`;
-	const [unclassified, unembeddedScreens, sectionsWithoutLabel, unembeddedSections] = await db
-		.query(
-			`SELECT id, url, title, media.viewport AS image FROM screen
-			 	WHERE crawl = $crawl AND page_type IS NONE ORDER BY seq;
-			 SELECT id, url, title, media.viewport AS image FROM screen
-			 	WHERE crawl = $crawl AND embedding IS NONE ORDER BY seq;
-			 SELECT id, media AS image FROM element
-			 	WHERE ${sectionsOfCrawl} AND label IS NONE;
-			 SELECT id, media AS image FROM element
-			 	WHERE ${sectionsOfCrawl} AND embedding IS NONE;`,
-			{ crawl: crawlId }
-		)
-		.collect<[ScreenToEnrich[], ScreenToEnrich[], SectionToEnrich[], SectionToEnrich[]]>();
+	const [unclassified, unembeddedScreens, sectionsWithoutLabel, unembeddedSections, unnamedFlows] =
+		await db
+			.query(
+				`SELECT id, url, title, media.viewport AS image FROM screen
+				 	WHERE crawl = $crawl AND page_type IS NONE ORDER BY seq;
+				 SELECT id, url, title, media.viewport AS image FROM screen
+				 	WHERE crawl = $crawl AND embedding IS NONE ORDER BY seq;
+				 SELECT id, media AS image FROM element
+				 	WHERE ${sectionsOfCrawl} AND label IS NONE;
+				 SELECT id, media AS image FROM element
+				 	WHERE ${sectionsOfCrawl} AND embedding IS NONE;
+				 SELECT id, steps, steps.screen.url AS urls, steps.screen.media.viewport AS images,
+				 	steps.action.label AS labels FROM flow
+				 	WHERE crawl = $crawl AND category IS NONE;`,
+				{ crawl: crawlId }
+			)
+			.collect<
+				[ScreenToEnrich[], ScreenToEnrich[], SectionToEnrich[], SectionToEnrich[], FlowToName[]]
+			>();
 
 	console.log(`crawl ${String(crawlId.id)}`);
 
@@ -156,6 +174,39 @@ export async function enrichCrawl(
 		const result = await callModel<{ label: string }>('/label-element', form);
 		await db
 			.query('UPDATE $element SET label = $label', { element: section.id, label: result.label })
+			.collect();
+	});
+
+	await runPass('name flows', unnamedFlows, async (flow) => {
+		const form = new FormData();
+		for (const key of flow.images) {
+			const bytes = await mediaStore.get(key);
+			if (bytes === undefined) throw new ItemSkipped(`media file is missing: ${key}`);
+			form.append(
+				'images',
+				new Blob([bytes as Uint8Array<ArrayBuffer>], { type: 'image/webp' }),
+				'image.webp'
+			);
+		}
+		form.set(
+			'steps',
+			JSON.stringify(
+				flow.urls.map((url, index) => ({ url, action_label: flow.labels[index] ?? '' }))
+			)
+		);
+		const result = await callModel<{ category: string; title: string; captions: string[] }>(
+			'/name-flow',
+			form
+		);
+		// The model only sees the first steps of a long flow, so later steps get no caption.
+		const steps = flow.steps.map((step, index) => ({ ...step, caption: result.captions[index] }));
+		await db
+			.query('UPDATE $flow SET category = $category, title = $title, steps = $steps', {
+				flow: flow.id,
+				category: result.category,
+				title: result.title,
+				steps
+			})
 			.collect();
 	});
 

@@ -15,8 +15,12 @@ from PIL import Image
 from . import settings
 from .schemas import (
     ELEMENT_LABELS,
+    FLOW_CATEGORIES,
+    FLOW_CATEGORY_DESCRIPTIONS,
     PAGE_TYPES,
     ElementLabel,
+    FlowNaming,
+    FlowStepInput,
     HistoryStep,
     ScreenClassification,
 )
@@ -25,6 +29,16 @@ from .schemas import (
 # image tokens, which is slow and adds nothing for judging a layout. Coordinates stay valid
 # because the agent answers in fractions of whatever image it was shown.
 CLASSIFY_MAX_SIDE = 1280
+# A flow sends several screenshots in one request, and the llama.cpp profile has a 16k context. At
+# 768 px a desktop page is about 450 image tokens and a phone page about 350, so the cap below
+# leaves room for the prompt and the captions. Layout and headings are still readable at this size.
+FLOW_MAX_SIDE = 768
+# 8 screenshots take about 4k tokens, so a flow of up to 16 would still fit, but small models
+# lose track of order and caption the wrong screenshot with that many. The first steps say most
+# about what a flow is for, so the rest are left out and get no caption.
+MAX_FLOW_STEPS = 8
+# Link text can be a whole paragraph (a card that is one big link), and a prompt needs only a hint.
+MAX_ACTION_LABEL_CHARACTERS = 80
 # The agent has to read small link text, so it gets a sharper image than the classifier.
 AGENT_MAX_SIDE = 1600
 # Element crops can be tiny (a button) or huge (a full-height section).
@@ -131,6 +145,68 @@ async def classify_screen(image_bytes: bytes, url: str, title: str) -> ScreenCla
         max_tokens=300,
     )  # fmt: skip
     return ScreenClassification.model_validate_json(message["content"])
+
+
+async def name_flow(
+    images: list[bytes], steps: list[FlowStepInput], known_category: str | None
+) -> FlowNaming:
+    """Names a flow from its screenshots: a category, a title and one caption per step.
+
+    Only the first `MAX_FLOW_STEPS` steps are looked at, so `captions` can be shorter than the
+    flow the caller holds.
+    """
+    steps = steps[:MAX_FLOW_STEPS]
+    content = [{"type": "text", "text": (
+        "These screenshots are consecutive steps of one visitor's path through a website, "
+        "captured for a library of design references. Each step names its URL and the click "
+        "that led to it.\n"
+    )}]  # fmt: skip
+    for number, (image, step) in enumerate(zip(images, steps), start=1):
+        data_uri, _ = image_to_data_uri(image, FLOW_MAX_SIDE)
+        action = step.action_label.strip()[:MAX_ACTION_LABEL_CHARACTERS]
+        reached_by = f'reached by clicking "{action}"' if action else "the first page"
+        content.append({"type": "text", "text": f"\nStep {number}: {step.url} ({reached_by})"})
+        content.append({"type": "image_url", "image_url": {"url": data_uri}})
+
+    categories = [known_category] if known_category is not None else FLOW_CATEGORIES
+    # Property order is decoding order: the captions come first, so the title and category are
+    # chosen after the model has described every step, and the array length is pinned to the
+    # screenshots that were sent.
+    schema = {
+        "type": "object",
+        "properties": {
+            "captions": {
+                "type": "array",
+                "items": {"type": "string", "maxLength": 200},
+                "minItems": len(steps),
+                "maxItems": len(steps),
+            },
+            "title": {"type": "string", "maxLength": 80},
+            "category": {"type": "string", "enum": categories},
+            "confidence": {"type": "number", "minimum": 0, "maximum": 1},
+        },
+        "required": ["captions", "title", "category", "confidence"],
+        "additionalProperties": False,
+    }
+    category_lines = "\n".join(
+        f"- {category}: {FLOW_CATEGORY_DESCRIPTIONS[category]}" for category in categories
+    )
+    instructions = (
+        "\n\nName this flow. captions: one sentence per step, in order, saying what the "
+        "screenshot shows and what the visitor did to get there (for the first step, what the "
+        "visitor starts on). title: a short free-text name for the whole flow, like 'Contacting "
+        "sales' or 'Browsing customer stories', without the site's name. category: what the "
+        "visitor is trying to do, judged by what the screenshots show and not by the first "
+        f"page alone. Allowed categories:\n{category_lines}\nUse 'other' only when none fits. "
+        "confidence: a number from 0 to 1."
+    )
+    content.append({"type": "text", "text": instructions})
+    message = await chat(
+        [{"role": "user", "content": content}],
+        response_format=json_schema_format("flow_naming", schema),
+        max_tokens=150 * len(steps) + 150,
+    )
+    return FlowNaming.model_validate_json(message["content"])
 
 
 async def label_element(image_bytes: bytes, kind: str) -> ElementLabel:

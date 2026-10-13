@@ -20,6 +20,9 @@ from .schemas import (
     ElementKind,
     ElementLabel,
     Embedding,
+    FLOW_CATEGORIES,
+    FlowNaming,
+    FlowStepInput,
     GiveUpAction,
     HistoryStep,
     NextAction,
@@ -54,6 +57,30 @@ async def label_element(
     kind: Annotated[ElementKind, Form()],
 ) -> ElementLabel:
     return await vlm.label_element(await image.read(), kind)
+
+
+@app.post("/name-flow")
+async def name_flow(
+    images: Annotated[list[UploadFile], File(description="Screenshots of the steps, in order")],
+    steps: Annotated[
+        str, Form(description='JSON list with one {"url", "action_label"} per image')
+    ],
+    category: Annotated[
+        str | None, Form(description="The category, when it is already known")
+    ] = None,
+) -> FlowNaming:
+    step_inputs = [FlowStepInput.model_validate(step) for step in json.loads(steps)]
+    if len(step_inputs) != len(images):
+        raise HTTPException(status_code=422, detail="Send one entry in steps per image.")
+    if category is not None and category not in FLOW_CATEGORIES:
+        raise HTTPException(status_code=422, detail=f"category must be one of {FLOW_CATEGORIES}.")
+    return await vlm.name_flow([await image.read() for image in images], step_inputs, category)
+
+
+@app.get("/name-flow/categories")
+async def flow_categories() -> list[str]:
+    """The fixed category list of flows."""
+    return FLOW_CATEGORIES
 
 
 @app.get("/label-element/labels")

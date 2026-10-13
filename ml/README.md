@@ -75,6 +75,23 @@ Fields: `image` (file), `kind` (`section`, `header`, `footer`, `nav`, `button`, 
 `form`, `dialog`, `menu` or `table`). Returns `{ "label": "hero", "confidence": 0.9 }`.
 The label lists per kind are in `refs_ml/schemas.py`, and `GET /label-element/labels` returns them.
 
+### `POST /name-flow`
+
+Names a flow, a run of screens that belongs together. Fields: `images` (files, one per step, in
+order), `steps` (JSON list with one `{"url", "action_label"}` per image; `action_label` is the
+text of the click that led to the step and is empty for the first), and `category` (optional,
+when it is already known, as for goal-directed flows; the answer then uses it).
+
+```json
+{ "category": "contacting", "title": "Contacting sales and support",
+  "captions": ["The visitor starts on ...", "The visitor clicks ..."], "confidence": 0.9 }
+```
+
+`category` is one of the `FLOW_CATEGORIES` in `refs_ml/schemas.py`, which follow Mobbin's flow
+tree adapted to websites, and `GET /name-flow/categories` returns them. Only the first 8 steps
+are sent to the model, to fit its 16k context, so `captions` has at most 8 entries. Screenshots
+are shrunk to 768 px. About 1 to 2 s for a flow of 2 to 4 steps, 5 s for 8.
+
 ### `POST /embed`
 
 Fields: `image` and/or `text`, `dimensions` (64 to 2048, default 1024), `instruction`
