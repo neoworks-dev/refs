@@ -1,9 +1,12 @@
 <script lang="ts">
 	import { page } from '$app/state';
-	import ElementKindChips from '#lib/components/ElementKindChips.svelte';
+	import FilterChips from '#lib/components/FilterChips.svelte';
 	import ElementTile from '#lib/components/ElementTile.svelte';
 	import SegmentedToggle from '#lib/components/SegmentedToggle.svelte';
+	import { humanise, kindLabels, kinds } from '#lib/labels.ts';
+	import { SECTION_LABELS } from '#lib/types.ts';
 	import { Shapes } from '@lucide/svelte';
+	import type { ElementKind } from '#lib/types.ts';
 	import type { PageProps } from './$types';
 
 	let { data }: PageProps = $props();
@@ -54,12 +57,27 @@
 		</span>
 	</div>
 
-	<div class="mt-6">
-		<ElementKindChips
+	<div class="mt-6 flex flex-col gap-3">
+		<FilterChips
+			ariaLabel="Element kind"
+			values={kinds}
 			counts={data.kindCounts}
+			label={(kind) => kindLabels[kind as ElementKind]}
 			active={data.kind}
-			href={(kind) => link({ kind, pages: undefined })}
+			href={(kind) => link({ kind, label: undefined, pages: undefined })}
 		/>
+		{#if data.kind === 'section' && (Object.keys(data.labelCounts).length > 0 || data.label)}
+			<!-- Sections are labelled by the model (hero, pricing, …), a second filter within the kind. -->
+			<FilterChips
+				compact
+				ariaLabel="Section label"
+				values={SECTION_LABELS}
+				counts={data.labelCounts}
+				label={humanise}
+				active={data.label}
+				href={(label) => link({ label, pages: undefined })}
+			/>
+		{/if}
 	</div>
 </div>
 

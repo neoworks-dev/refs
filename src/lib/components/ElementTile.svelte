@@ -1,5 +1,6 @@
 <script lang="ts">
 	import type { ElementListItem } from '#lib/server/queries.ts';
+	import { humanise } from '../labels.ts';
 	import SiteIcon from './SiteIcon.svelte';
 
 	type Props = {
@@ -38,7 +39,8 @@
 					? 'small'
 					: 'fit'
 	);
-	const kindLabel = $derived(element.kind.charAt(0).toUpperCase() + element.kind.slice(1));
+	// A labelled section reads better as its label ("Hero") than as the kind it shares with all.
+	const kindLabel = $derived(humanise(element.label ?? element.kind));
 	const title = $derived(element.name || kindLabel);
 	// An unnamed element already shows its kind as the title. Next to the site's own icon the page
 	// path matters less than the site's name.

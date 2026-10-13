@@ -2,8 +2,9 @@
 	import { goto } from '$app/navigation';
 	import { page } from '$app/state';
 	import { CornerDownLeft, LoaderCircle, Search, SearchX } from '@lucide/svelte';
-	import type { SearchResults } from '#lib/server/queries.ts';
-	import type { Site } from '../types.ts';
+	import type { SearchResults, SemanticResults, SemanticScreenHit } from '#lib/server/queries.ts';
+	import { humanise } from '../labels.ts';
+	import type { Rect, Site } from '../types.ts';
 	import Modal from './Modal.svelte';
 	import SiteIcon from './SiteIcon.svelte';
 
@@ -18,10 +19,15 @@
 	const RECENT_LIMIT = 6;
 	// Short enough to feel instant, long enough to skip the request for every keystroke.
 	const SEARCH_DELAY_MS = 120;
+	// Matching by meaning embeds the query on the GPU, so it waits for a real pause in typing
+	// instead of running for every few keystrokes.
+	const MEANING_DELAY_MS = 400;
 
 	let query = $state('');
 	let results = $state<SearchResults>();
+	let meaning = $state<SemanticResults>();
 	let loading = $state(false);
+	let meaningLoading = $state(false);
 	let failed = $state(false);
 	let activeIndex = $state(0);
 
@@ -41,11 +47,20 @@
 			...results.elements.map(
 				(element) =>
 					`/sites/${element.site}?viewport=${element.viewport}&screen=${element.screen}&el=${element.id}`
+			),
+			...(meaning?.screens ?? []).map(
+				(screen) => `/sites/${screen.site}?viewport=${screen.viewport}&screen=${screen.id}`
+			),
+			...(meaning?.sections ?? []).map(
+				(section) =>
+					`/sites/${section.site}?viewport=${section.viewport}&screen=${section.screen}&el=${section.id}`
 			)
 		];
 	});
 	const screenOffset = $derived(results?.sites.length ?? 0);
 	const elementOffset = $derived(screenOffset + (results?.screens.length ?? 0));
+	const meaningScreenOffset = $derived(elementOffset + (results?.elements.length ?? 0));
+	const meaningSectionOffset = $derived(meaningScreenOffset + (meaning?.screens.length ?? 0));
 
 	function readRecents(): RecentSite[] {
 		try {
@@ -95,6 +110,40 @@
 			}
 			loading = false;
 		}, SEARCH_DELAY_MS);
+		return () => {
+			clearTimeout(timer);
+			controller.abort();
+		};
+	});
+
+	// Then the matches by meaning, which need the model service and so arrive later than the
+	// name matches. When the service is down the endpoint answers with nothing and the section
+	// simply never shows.
+	$effect(() => {
+		const needle = query.trim();
+		if (needle === '') {
+			meaning = undefined;
+			meaningLoading = false;
+			return;
+		}
+		meaningLoading = true;
+		const controller = new AbortController();
+		const timer = setTimeout(async () => {
+			try {
+				const response = await fetch(`/search?by=meaning&q=${encodeURIComponent(needle)}`, {
+					signal: controller.signal
+				});
+				if (!response.ok) throw new Error(`search by meaning failed with ${response.status}`);
+				meaning = await response.json();
+			} catch (error) {
+				// An aborted request means a newer query took over; anything else is a real failure,
+				// but the name matches are still useful, so only the meaning section goes away.
+				if (controller.signal.aborted) return;
+				console.error(error);
+				meaning = undefined;
+			}
+			meaningLoading = false;
+		}, MEANING_DELAY_MS);
 		return () => {
 			clearTimeout(timer);
 			controller.abort();
@@ -169,7 +218,7 @@
 				placeholder="Search Refs…"
 				class="min-w-0 flex-1 border-0 bg-transparent p-0 text-[18px] text-white placeholder:text-neutral-400 focus:ring-0 focus:outline-none [&::-webkit-search-cancel-button]:appearance-none"
 			/>
-			{#if loading}
+			{#if loading || meaningLoading}
 				<LoaderCircle class="size-5 shrink-0 animate-spin text-neutral-400" strokeWidth={2.25} />
 			{/if}
 			<kbd
@@ -204,7 +253,7 @@
 				<p class="px-3 pt-4 pb-8 text-[15px] text-neutral-400">
 					Search is not available right now. Try again in a moment.
 				</p>
-			{:else if results && hrefs.length === 0}
+			{:else if results && hrefs.length === 0 && !meaningLoading}
 				<div class="flex flex-col items-center px-6 pt-8 pb-10 text-center">
 					<SearchX class="size-8 text-neutral-500" strokeWidth={1.75} />
 					<h2 class="mt-4 text-[17px] font-medium">No results for “{query.trim()}”</h2>
@@ -222,85 +271,50 @@
 				{#if results.screens.length > 0}
 					<h2 class="px-3 pt-4 pb-1.5 text-[13px] font-medium text-neutral-400">Screens</h2>
 					{#each results.screens as screen, index (screen.id)}
-						{@const itemIndex = screenOffset + index}
-						<a
-							id="palette-item-{itemIndex}"
-							role="option"
-							aria-selected={activeIndex === itemIndex}
-							href={hrefs[itemIndex]}
-							onclick={close}
-							onmousemove={() => (activeIndex = itemIndex)}
-							class={[
-								'flex items-center gap-3.5 rounded-2xl px-3 py-2.5 outline-none',
-								activeIndex === itemIndex && 'bg-white/10'
-							]}
-						>
-							<span class="flex h-11 w-[60px] shrink-0 justify-center">
-								<img
-									src="/media/{screen.thumb}"
-									alt=""
-									width={screen.width}
-									height={screen.height}
-									loading="lazy"
-									class={[
-										'h-full rounded-md bg-white object-cover object-top',
-										screen.viewport === 'mobile' ? 'w-8' : 'w-full'
-									]}
-								/>
-							</span>
-							<span class="min-w-0 flex-1 leading-snug">
-								<span class="block truncate text-[16px] font-medium">
-									{screen.title || screen.path}
-								</span>
-								<span class="block truncate text-[14px] text-neutral-400">
-									{screen.siteName} · {screen.path}
-								</span>
-							</span>
-							<span class="shrink-0 text-[13px] text-neutral-500 capitalize">{screen.viewport}</span
-							>
-							{@render enterHint(itemIndex)}
-						</a>
+						{@render screenRow(screen, screenOffset + index)}
 					{/each}
 				{/if}
 				{#if results.elements.length > 0}
 					<h2 class="px-3 pt-4 pb-1.5 text-[13px] font-medium text-neutral-400">Elements</h2>
 					{#each results.elements as element, index (element.id)}
-						{@const itemIndex = elementOffset + index}
-						<a
-							id="palette-item-{itemIndex}"
-							role="option"
-							aria-selected={activeIndex === itemIndex}
-							href={hrefs[itemIndex]}
-							onclick={close}
-							onmousemove={() => (activeIndex = itemIndex)}
-							class={[
-								'flex items-center gap-3.5 rounded-2xl px-3 py-2.5 outline-none',
-								activeIndex === itemIndex && 'bg-white/10'
-							]}
-						>
-							<!-- A light stage keeps dark crops readable on the dark panel. -->
-							<span
-								class="flex h-11 w-[60px] shrink-0 items-center justify-center overflow-hidden rounded-lg bg-neutral-100 p-1.5"
-							>
-								<img
-									src="/media/{element.media}"
-									alt=""
-									loading="lazy"
-									class="max-h-full max-w-full object-contain"
-									style:width="{element.rect.w}px"
-								/>
-							</span>
-							<span class="min-w-0 flex-1 leading-snug">
-								<span class="block truncate text-[16px] font-medium">
-									{element.name || `Unnamed ${element.kind}`}
-								</span>
-								<span class="block truncate text-[14px] text-neutral-400">
-									<span class="capitalize">{element.kind}</span> · {element.siteName}
-								</span>
-							</span>
-							{@render enterHint(itemIndex)}
-						</a>
+						{@render elementRow(
+							{
+								media: element.media,
+								rect: element.rect,
+								title: element.name || `Unnamed ${element.kind}`,
+								subtitle: `${humanise(element.kind)} · ${element.siteName}`
+							},
+							elementOffset + index
+						)}
 					{/each}
+				{/if}
+				{#if meaning && meaning.screens.length > 0}
+					<h2 class="px-3 pt-4 pb-1.5 text-[13px] font-medium text-neutral-400">
+						Screens by meaning
+					</h2>
+					{#each meaning.screens as screen, index (screen.id)}
+						{@render screenRow(screen, meaningScreenOffset + index)}
+					{/each}
+				{/if}
+				{#if meaning && meaning.sections.length > 0}
+					<h2 class="px-3 pt-4 pb-1.5 text-[13px] font-medium text-neutral-400">
+						Sections by meaning
+					</h2>
+					{#each meaning.sections as section, index (section.id)}
+						{@render elementRow(
+							{
+								media: section.media,
+								rect: section.rect,
+								title:
+									section.name || (section.label ? humanise(section.label) : 'Unnamed section'),
+								subtitle: `${section.label ? humanise(section.label) : 'Section'} · ${section.siteName} · ${section.screenPath}`
+							},
+							meaningSectionOffset + index
+						)}
+					{/each}
+				{/if}
+				{#if hrefs.length === 0 && meaningLoading}
+					<p class="px-3 pt-4 pb-8 text-[15px] text-neutral-400">Looking for matches by meaning…</p>
 				{/if}
 			{/if}
 		</div>
@@ -337,6 +351,81 @@
 			<span class="block truncate text-[14px] text-neutral-400">{site.host}</span>
 		</span>
 		<span class="shrink-0 text-[13px] text-neutral-500">Site</span>
+		{@render enterHint(itemIndex)}
+	</a>
+{/snippet}
+
+<!-- A screen row; name matches and matches by meaning look the same. -->
+{#snippet screenRow(screen: SemanticScreenHit, itemIndex: number)}
+	<a
+		id="palette-item-{itemIndex}"
+		role="option"
+		aria-selected={activeIndex === itemIndex}
+		href={hrefs[itemIndex]}
+		onclick={close}
+		onmousemove={() => (activeIndex = itemIndex)}
+		class={[
+			'flex items-center gap-3.5 rounded-2xl px-3 py-2.5 outline-none',
+			activeIndex === itemIndex && 'bg-white/10'
+		]}
+	>
+		<span class="flex h-11 w-[60px] shrink-0 justify-center">
+			<img
+				src="/media/{screen.thumb}"
+				alt=""
+				width={screen.width}
+				height={screen.height}
+				loading="lazy"
+				class={[
+					'h-full rounded-md bg-white object-cover object-top',
+					screen.viewport === 'mobile' ? 'w-8' : 'w-full'
+				]}
+			/>
+		</span>
+		<span class="min-w-0 flex-1 leading-snug">
+			<span class="block truncate text-[16px] font-medium">{screen.title || screen.path}</span>
+			<span class="block truncate text-[14px] text-neutral-400">
+				{screen.siteName} · {screen.pageType ? `${humanise(screen.pageType)} · ` : ''}{screen.path}
+			</span>
+		</span>
+		<span class="shrink-0 text-[13px] text-neutral-500 capitalize">{screen.viewport}</span>
+		{@render enterHint(itemIndex)}
+	</a>
+{/snippet}
+
+<!-- An element or section row. -->
+{#snippet elementRow(
+	element: { media: string; rect: Rect; title: string; subtitle: string },
+	itemIndex: number
+)}
+	<a
+		id="palette-item-{itemIndex}"
+		role="option"
+		aria-selected={activeIndex === itemIndex}
+		href={hrefs[itemIndex]}
+		onclick={close}
+		onmousemove={() => (activeIndex = itemIndex)}
+		class={[
+			'flex items-center gap-3.5 rounded-2xl px-3 py-2.5 outline-none',
+			activeIndex === itemIndex && 'bg-white/10'
+		]}
+	>
+		<!-- A light stage keeps dark crops readable on the dark panel. -->
+		<span
+			class="flex h-11 w-[60px] shrink-0 items-center justify-center overflow-hidden rounded-lg bg-neutral-100 p-1.5"
+		>
+			<img
+				src="/media/{element.media}"
+				alt=""
+				loading="lazy"
+				class="max-h-full max-w-full object-contain"
+				style:width="{element.rect.w}px"
+			/>
+		</span>
+		<span class="min-w-0 flex-1 leading-snug">
+			<span class="block truncate text-[16px] font-medium">{element.title}</span>
+			<span class="block truncate text-[14px] text-neutral-400">{element.subtitle}</span>
+		</span>
 		{@render enterHint(itemIndex)}
 	</a>
 {/snippet}

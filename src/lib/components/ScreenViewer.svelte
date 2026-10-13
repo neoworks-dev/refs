@@ -10,6 +10,7 @@
 		X
 	} from '@lucide/svelte';
 	import type { ScreenDetail } from '#lib/server/queries.ts';
+	import { humanise } from '../labels.ts';
 	import type { Site } from '../types.ts';
 	import Modal from './Modal.svelte';
 	import SiteIcon from './SiteIcon.svelte';
@@ -262,6 +263,12 @@
 		</div>
 
 		<aside class="shrink-0 px-4 pt-6 pb-8 sm:px-6 lg:w-[380px] lg:overflow-y-auto">
+			{#if screen.description}
+				<!-- The model's one-paragraph summary of the screen. Quiet, since it can be wrong. -->
+				<p class="mb-6 text-[14px] leading-relaxed text-neutral-500 dark:text-neutral-400">
+					{screen.description}
+				</p>
+			{/if}
 			<dl class="grid grid-cols-[auto_1fr] gap-x-6 gap-y-3 text-[15px]">
 				<dt class="text-neutral-500 dark:text-neutral-400">Page</dt>
 				<dd class="min-w-0">
@@ -282,7 +289,15 @@
 				<dt class="text-neutral-500 dark:text-neutral-400">Full page</dt>
 				<dd class="font-medium">{screen.width}×{screen.full_height}</dd>
 				<dt class="text-neutral-500 dark:text-neutral-400">Type</dt>
-				<dd class="font-medium">{screen.kind === 'state' ? 'State' : 'Page'}</dd>
+				<dd class="font-medium">
+					{screen.kind === 'state' ? 'State' : 'Page'}
+					<!-- A state's type comes from its overlay and is unreliable, so only pages show one. -->
+					{#if screen.page_type && screen.kind === 'page'}
+						<span class="font-normal text-neutral-500 dark:text-neutral-400">
+							· {humanise(screen.page_type)}
+						</span>
+					{/if}
+				</dd>
 				<dt class="text-neutral-500 dark:text-neutral-400">Captured</dt>
 				<dd class="font-medium">
 					{new Date(screen.captured_at).toLocaleDateString('en', {
@@ -357,7 +372,9 @@
 									/>
 								</span>
 								<span class="truncate px-1 text-[13px] leading-tight">
-									<span class="font-medium capitalize">{element.kind}</span>
+									<span class="font-medium capitalize"
+										>{element.label ? humanise(element.label) : element.kind}</span
+									>
 									{#if element.name}<span class="text-neutral-500 dark:text-neutral-400">
 											· {element.name}</span
 										>{/if}

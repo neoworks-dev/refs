@@ -5,7 +5,7 @@ import {
 	listScreens,
 	recrawl
 } from '#lib/server/queries.ts';
-import type { ElementKind, Viewport } from '#lib/types.ts';
+import type { ElementKind, SectionLabel, Viewport } from '#lib/types.ts';
 import type { Actions, PageServerLoad } from './$types';
 
 export const load: PageServerLoad = async ({ url, parent }) => {
@@ -22,16 +22,29 @@ export const load: PageServerLoad = async ({ url, parent }) => {
 	const tab = url.searchParams.get('tab') === 'elements' ? 'elements' : 'screens';
 	// An unknown kind is harmless: it is a query parameter and just matches no elements.
 	const kind = (url.searchParams.get('kind') ?? undefined) as ElementKind | undefined;
+	const label = (url.searchParams.get('label') ?? undefined) as SectionLabel | undefined;
+	const pageType = url.searchParams.get('type') ?? undefined;
 	const screenParam = url.searchParams.get('screen');
 
 	const crawlId = sources[viewport];
-	const [screens, elements, viewer] = await Promise.all([
-		tab === 'screens' && crawlId ? listScreens(crawlId) : [],
-		tab === 'elements' && crawlId ? listElements(crawlId, kind) : [],
+	const [screenList, elementList, viewer] = await Promise.all([
+		tab === 'screens' && crawlId ? listScreens(crawlId, pageType) : undefined,
+		tab === 'elements' && crawlId ? listElements(crawlId, { kind, label }) : undefined,
 		screenParam ? getScreenDetail(site.id, screenParam) : undefined
 	]);
 
-	return { viewport, tab, kind, screens, elements, viewer };
+	return {
+		viewport,
+		tab,
+		kind,
+		label,
+		pageType,
+		screens: screenList?.screens ?? [],
+		pageTypeCounts: screenList?.pageTypeCounts ?? {},
+		elements: elementList?.elements ?? [],
+		labelCounts: elementList?.labelCounts ?? {},
+		viewer
+	};
 };
 
 export const actions: Actions = {

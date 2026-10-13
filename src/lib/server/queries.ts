@@ -1,6 +1,16 @@
 // Every database query the web app makes. Route load functions and form actions call these and
 // never talk to SurrealDB directly.
-import type { Crawl, ElementKind, Rect, Screen, Site, UiElement, Viewport } from '../types.ts';
+import * as env from '$app/env/private';
+import type {
+	Crawl,
+	ElementKind,
+	Rect,
+	Screen,
+	SectionLabel,
+	Site,
+	UiElement,
+	Viewport
+} from '../types.ts';
 import { VIEWPORTS } from '../types.ts';
 import { db } from './db.ts';
 import {
@@ -269,6 +279,119 @@ export async function searchAll(search: string): Promise<SearchResults> {
 	return { sites, screens, elements };
 }
 
+/** A screen whose picture the query matches by meaning. */
+export interface SemanticScreenHit extends ScreenHit {
+	pageType?: string;
+	description?: string;
+}
+
+/** A section crop that the query matches by meaning. */
+export interface SemanticSectionHit {
+	id: string;
+	site: string;
+	siteName: string;
+	screen: string;
+	screenPath: string;
+	viewport: Viewport;
+	label?: SectionLabel;
+	name: string;
+	media: string;
+	rect: Rect;
+}
+
+export interface SemanticResults {
+	screens: SemanticScreenHit[];
+	sections: SemanticSectionHit[];
+}
+
+const MODEL_SERVICE_URL = env.REFS_ML_URL ?? 'http://127.0.0.1:8022';
+// Must match the dimension of the HNSW indexes in db/schema.surql.
+const EMBEDDING_DIMENSIONS = 1024;
+const SEMANTIC_LIMIT = 8;
+// How many neighbours the index returns before the current-crawl filter runs. The index also
+// holds superseded crawls, so asking for only SEMANTIC_LIMIT could leave fewer after filtering.
+const NEIGHBOURS = 50;
+// The HNSW search effort (`ef`): the number of candidates it explores. Higher is more exact
+// and slower; twice the neighbour count is plenty for a library this size.
+const SEARCH_EFFORT = 100;
+
+/**
+ * Turns the query into a vector with the model service. Returns undefined when the service is
+ * not running, so the palette can carry on with the name matches alone.
+ */
+async function embedQuery(text: string): Promise<number[] | undefined> {
+	const form = new FormData();
+	form.set('text', text);
+	form.set('dimensions', String(EMBEDDING_DIMENSIONS));
+	let response: Response;
+	try {
+		response = await fetch(`${MODEL_SERVICE_URL}/embed`, { method: 'POST', body: form });
+	} catch (error) {
+		// fetch rejects with a bare TypeError; a refused connection (nothing listening on the port)
+		// is the one failure that means "the service is not running" and is expected.
+		const cause =
+			error instanceof TypeError ? (error.cause as { code?: string } | undefined) : undefined;
+		if (cause?.code === 'ECONNREFUSED') return undefined;
+		throw error;
+	}
+	if (!response.ok) throw new Error(`embedding failed with ${response.status}`);
+	const { vector } = (await response.json()) as { vector: number[] };
+	return vector;
+}
+
+/**
+ * Screens and sections whose picture is closest to the meaning of the query. Empty when the
+ * model service is down.
+ */
+export async function searchByMeaning(search: string): Promise<SemanticResults> {
+	const text = search.trim();
+	const vector = text === '' ? undefined : await embedQuery(text);
+	if (vector === undefined) return { screens: [], sections: [] };
+	const crawls = (await sourceCrawls(await db())).map((crawl) => new RecordId('crawl', crawl.id));
+
+	// The WHERE next to the KNN operator would apply after the top k, so the subquery oversamples
+	// and the filter on current crawls runs outside it.
+	const [screenMatches, sectionMatches] = await Promise.all([
+		rows<{ id: string }>(
+			`SELECT id, site, path, page_type, viewport, distance FROM (
+				SELECT id, site, path, page_type, viewport, crawl, vector::distance::knn() AS distance
+				FROM screen WHERE embedding <|${NEIGHBOURS},${SEARCH_EFFORT}|> $vector
+			) WHERE crawl IN $crawls ORDER BY distance LIMIT $limit`,
+			{ vector, crawls, limit: SEMANTIC_LIMIT }
+		),
+		rows<{ id: string }>(
+			`SELECT id, site, screen, viewport, label, distance FROM (
+				SELECT id, site, screen, viewport, label, kind, screen.crawl AS crawl,
+					vector::distance::knn() AS distance
+				FROM element WHERE embedding <|${NEIGHBOURS},${SEARCH_EFFORT}|> $vector
+			) WHERE kind = 'section' AND crawl IN $crawls ORDER BY distance LIMIT $limit`,
+			{ vector, crawls, limit: SEMANTIC_LIMIT }
+		)
+	]);
+
+	// The KNN rows carry no display fields; look them up and keep the distance order.
+	const [screenDetails, sectionDetails] = await Promise.all([
+		rows<SemanticScreenHit>(
+			`SELECT id, site, site.name AS siteName, viewport, path, title, page_type AS pageType,
+				description, media.thumb AS thumb, width, height
+			 FROM screen WHERE id IN $ids`,
+			{ ids: screenMatches.map((match) => new RecordId('screen', match.id)) }
+		),
+		rows<SemanticSectionHit>(
+			`SELECT id, site, site.name AS siteName, screen, screen.path AS screenPath, viewport,
+				label, name, media, rect
+			 FROM element WHERE id IN $ids`,
+			{ ids: sectionMatches.map((match) => new RecordId('element', match.id)) }
+		)
+	]);
+	const screenById = new Map(screenDetails.map((screen) => [screen.id, screen]));
+	const sectionById = new Map(sectionDetails.map((section) => [section.id, section]));
+	return {
+		screens: screenMatches.flatMap((match) => screenById.get(match.id) ?? []),
+		sections: sectionMatches.flatMap((match) => sectionById.get(match.id) ?? [])
+	};
+}
+
 // ---------------------------------------------------------------------------------------------
 // Site detail
 // ---------------------------------------------------------------------------------------------
@@ -329,11 +452,72 @@ export async function getSiteOverview(slug: string): Promise<SiteOverview | unde
 	return { site, crawls, sources, screenCounts, kindCounts };
 }
 
-/** Screens of one crawl in capture order. */
-export function listScreens(crawlId: string): Promise<Screen[]> {
-	return rows<Screen>('SELECT * OMIT embedding FROM screen WHERE crawl = $crawl ORDER BY seq', {
-		crawl: new RecordId('crawl', crawlId)
-	});
+export interface ScreenList {
+	screens: Screen[];
+	/** Screens per page type in the whole crawl, whatever filter is active; the chips' counts. */
+	pageTypeCounts: Partial<Record<string, number>>;
+}
+
+/**
+ * Screens of one crawl in capture order, optionally of one page type.
+ *
+ * A state (a modal or menu open on a page) is typed by the model from its overlay, which is
+ * unreliable: a pricing page's "contact sales" dialog comes back as "contact", and its mobile menu
+ * as "other". So a state counts as the type of the page it was opened on, and the filter keeps
+ * the states that hang off a matching page along with that page. Filtering to pages only would
+ * hide half of what a pricing page shows; trusting the overlay would scatter them.
+ */
+export async function listScreens(crawlId: string, pageType?: string): Promise<ScreenList> {
+	const crawl = new RecordId('crawl', crawlId);
+	const [screens, parents] = await Promise.all([
+		rows<Screen>('SELECT * OMIT embedding FROM screen WHERE crawl = $crawl ORDER BY seq', {
+			crawl
+		}),
+		rows<{ state: string; pageType?: string }>(
+			`SELECT out AS state, in.page_type AS pageType FROM action
+			 WHERE crawl = $crawl AND in.kind = 'page' AND out.kind = 'state'`,
+			{ crawl }
+		)
+	]);
+
+	// A state reached from several pages takes the type of the first one.
+	const parentType = new Map<string, string | undefined>();
+	for (const parent of parents) {
+		if (!parentType.has(parent.state)) parentType.set(parent.state, parent.pageType);
+	}
+	const effectiveType = (screen: Screen) =>
+		screen.kind === 'state' ? parentType.get(screen.id) : screen.page_type;
+
+	const pageTypeCounts: ScreenList['pageTypeCounts'] = {};
+	for (const screen of screens) {
+		const type = effectiveType(screen);
+		if (type !== undefined) pageTypeCounts[type] = (pageTypeCounts[type] ?? 0) + 1;
+	}
+	return {
+		screens:
+			pageType === undefined
+				? screens
+				: screens.filter((screen) => effectiveType(screen) === pageType),
+		pageTypeCounts
+	};
+}
+
+/** Sections per label across the given crawls; the counts behind the label chips. */
+async function countSectionLabels(
+	crawls: RecordId[],
+	viewport?: Viewport
+): Promise<Partial<Record<string, number>>> {
+	const { conditions, variables } = elementConditions({ kind: 'section', viewport }, crawls);
+	const groups = await rows<{ label?: string; count: number }>(
+		`SELECT label, count() AS count FROM element WHERE ${conditions.join(' AND ')} GROUP BY label`,
+		variables
+	);
+	const counts: Partial<Record<string, number>> = {};
+	for (const group of groups) {
+		// Sections the model hasn't labelled yet only show under "All".
+		if (group.label !== undefined) counts[group.label] = group.count;
+	}
+	return counts;
 }
 
 export interface ElementListItem extends UiElement {
@@ -342,16 +526,34 @@ export interface ElementListItem extends UiElement {
 	screen_path: string;
 }
 
-/** Elements of one crawl, optionally of one kind, in page order. */
-export function listElements(crawlId: string, kind?: ElementKind): Promise<ElementListItem[]> {
-	const { conditions, variables } = elementConditions({ kind }, [new RecordId('crawl', crawlId)]);
-	return rows<ElementListItem>(
-		`SELECT *, screen.seq AS screen_seq, screen.path AS screen_path OMIT embedding FROM element
-		 WHERE ${conditions.join(' AND ')}
-		 ORDER BY screen_seq, rect.y
-		 LIMIT 400`,
-		variables
+export interface ElementList {
+	elements: ElementListItem[];
+	/** Sections per label in the crawl, whatever label is active. */
+	labelCounts: Partial<Record<string, number>>;
+}
+
+/** Elements of one crawl, optionally of one kind and, for sections, one label, in page order. */
+export async function listElements(
+	crawlId: string,
+	criteria: { kind?: ElementKind; label?: SectionLabel }
+): Promise<ElementList> {
+	const crawls = [new RecordId('crawl', crawlId)];
+	const { conditions, variables } = elementConditions(
+		// A label only exists on sections, so another kind would match nothing.
+		{ kind: criteria.kind, label: criteria.kind === 'section' ? criteria.label : undefined },
+		crawls
 	);
+	const [elements, labelCounts] = await Promise.all([
+		rows<ElementListItem>(
+			`SELECT *, screen.seq AS screen_seq, screen.path AS screen_path OMIT embedding FROM element
+			 WHERE ${conditions.join(' AND ')}
+			 ORDER BY screen_seq, rect.y
+			 LIMIT 400`,
+			variables
+		),
+		criteria.kind === 'section' ? countSectionLabels(crawls) : {}
+	]);
+	return { elements, labelCounts };
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -369,20 +571,26 @@ export interface Library {
 	hasMore: boolean;
 	/** Elements per kind in the viewport, across all sites; the counts behind the filter chips. */
 	kindCounts: Partial<Record<ElementKind, number>>;
+	/** Sections per label in the viewport, across all sites; empty unless the kind is `section`. */
+	labelCounts: Partial<Record<string, number>>;
 }
 
-/** Elements of every site's current crawl in one viewport, optionally of one kind. */
+/** Elements of every site's current crawl in one viewport, optionally of one kind and label. */
 export async function listLibrary(
-	criteria: { viewport: Viewport; kind?: ElementKind },
+	criteria: { viewport: Viewport; kind?: ElementKind; label?: SectionLabel },
 	limit: number
 ): Promise<Library> {
 	const crawls = (await sourceCrawls(await db()))
 		.filter((crawl) => crawl.viewport === criteria.viewport)
 		.map((crawl) => new RecordId('crawl', crawl.id));
 	const inViewport = elementConditions({ viewport: criteria.viewport }, crawls);
-	const filtered = elementConditions(criteria, crawls);
+	// A label only exists on sections, so another kind would match nothing.
+	const filtered = elementConditions(
+		{ ...criteria, label: criteria.kind === 'section' ? criteria.label : undefined },
+		crawls
+	);
 
-	const [elements, kindGroups] = await Promise.all([
+	const [elements, kindGroups, labelCounts] = await Promise.all([
 		// One extra row tells whether there is a next page without a separate count.
 		rows<LibraryElement>(
 			`SELECT *, screen.seq AS screen_seq, screen.path AS screen_path,
@@ -396,12 +604,18 @@ export async function listLibrary(
 			`SELECT kind, count() AS count FROM element
 			 WHERE ${inViewport.conditions.join(' AND ')} GROUP BY kind`,
 			inViewport.variables
-		)
+		),
+		criteria.kind === 'section' ? countSectionLabels(crawls, criteria.viewport) : {}
 	]);
 
 	const kindCounts: Library['kindCounts'] = {};
 	for (const group of kindGroups) kindCounts[group.kind] = group.count;
-	return { elements: elements.slice(0, limit), hasMore: elements.length > limit, kindCounts };
+	return {
+		elements: elements.slice(0, limit),
+		hasMore: elements.length > limit,
+		kindCounts,
+		labelCounts
+	};
 }
 
 // ---------------------------------------------------------------------------------------------

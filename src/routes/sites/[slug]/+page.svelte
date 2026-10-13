@@ -4,13 +4,14 @@
 	import { page } from '$app/state';
 	import { Box } from '@lucide/svelte';
 	import CrawlStatus from '#lib/components/CrawlStatus.svelte';
-	import ElementKindChips from '#lib/components/ElementKindChips.svelte';
+	import FilterChips from '#lib/components/FilterChips.svelte';
 	import ElementTile from '#lib/components/ElementTile.svelte';
 	import ScreenCard from '#lib/components/ScreenCard.svelte';
 	import ScreenViewer from '#lib/components/ScreenViewer.svelte';
 	import SegmentedToggle from '#lib/components/SegmentedToggle.svelte';
 	import SiteIcon from '#lib/components/SiteIcon.svelte';
-	import type { Viewport } from '#lib/types.ts';
+	import { humanise, kindLabels, kinds } from '#lib/labels.ts';
+	import { PAGE_TYPES, SECTION_LABELS, type ElementKind, type Viewport } from '#lib/types.ts';
 	import type { PageProps } from './$types';
 
 	let { data }: PageProps = $props();
@@ -25,6 +26,10 @@
 		viewports
 			.flatMap((viewport) => Object.values(data.kindCounts[viewport]))
 			.reduce((total, count) => total + count, 0)
+	);
+	// A filter that matches nothing is not the same as a site that has nothing yet.
+	const filtered = $derived(
+		data.tab === 'screens' ? data.pageType !== undefined : data.kind !== undefined
 	);
 	const lastCrawled = $derived(
 		data.crawls.find((crawl) => crawl.status === 'done' && crawl.finished_at)?.finished_at
@@ -181,7 +186,7 @@
 		data-sveltekit-reset="false"
 	>
 		<!-- The active tab's underline sits on the row's bottom border. -->
-		{#each [{ value: 'screens', label: 'Screens', href: link( { tab: undefined, kind: undefined } ) }, { value: 'elements', label: 'Elements', href: link( { tab: 'elements' } ) }] as tab (tab.value)}
+		{#each [{ value: 'screens', label: 'Screens', href: link( { tab: undefined, kind: undefined, label: undefined } ) }, { value: 'elements', label: 'Elements', href: link( { tab: 'elements', type: undefined } ) }] as tab (tab.value)}
 			<a
 				href={tab.href}
 				aria-current={data.tab === tab.value ? 'page' : undefined}
@@ -208,6 +213,18 @@
 
 <div class="mt-8">
 	{#if data.tab === 'screens'}
+		{#if Object.keys(data.pageTypeCounts).length > 0}
+			<div class="mb-8">
+				<FilterChips
+					ariaLabel="Page type"
+					values={PAGE_TYPES}
+					counts={data.pageTypeCounts}
+					label={humanise}
+					active={data.pageType}
+					href={(pageType) => link({ type: pageType, screen: undefined, el: undefined })}
+				/>
+			</div>
+		{/if}
 		{#if data.screens.length > 0}
 			<ul
 				class={[
@@ -225,12 +242,27 @@
 			{@render empty('screens')}
 		{/if}
 	{:else}
-		<div class="mb-8">
-			<ElementKindChips
+		<div class="mb-8 flex flex-col gap-3">
+			<FilterChips
+				ariaLabel="Element kind"
+				values={kinds}
 				counts={data.kindCounts[data.viewport]}
+				label={(kind) => kindLabels[kind as ElementKind]}
 				active={data.kind}
-				href={(kind) => link({ kind })}
+				href={(kind) => link({ kind, label: undefined, screen: undefined, el: undefined })}
 			/>
+			{#if data.kind === 'section' && (Object.keys(data.labelCounts).length > 0 || data.label)}
+				<!-- Sections are labelled by the model (hero, pricing, …), a second filter within the kind. -->
+				<FilterChips
+					compact
+					ariaLabel="Section label"
+					values={SECTION_LABELS}
+					counts={data.labelCounts}
+					label={humanise}
+					active={data.label}
+					href={(label) => link({ label, screen: undefined, el: undefined })}
+				/>
+			{/if}
 		</div>
 
 		{#if data.elements.length > 0}
@@ -269,7 +301,9 @@
 			{activeCrawls.length > 0 ? `Capturing ${what}…` : `No ${what} yet`}
 		</h2>
 		<p class="mt-2 max-w-sm text-[17px] text-balance text-neutral-500 dark:text-neutral-400">
-			{#if activeCrawls.length > 0}
+			{#if filtered}
+				No {what} of this kind on the {data.viewport} viewport. Pick another chip, or All.
+			{:else if activeCrawls.length > 0}
 				They show up here as the crawler finds them.
 			{:else}
 				Run a crawl for the {data.viewport} viewport to fill this in.

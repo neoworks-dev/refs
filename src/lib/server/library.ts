@@ -3,7 +3,7 @@
 // screens and elements are filtered, and how a site URL becomes a slug. Everything specific to one
 // side stays in that side's own queries.
 import type { Surreal } from 'surrealdb';
-import type { CrawlStatus, ElementKind, Viewport } from '../types.ts';
+import type { CrawlStatus, ElementKind, SectionLabel, Viewport } from '../types.ts';
 import { plain, RecordId } from './surreal.ts';
 
 /** Runs a query with a single statement and returns its rows as plain JSON. */
@@ -151,6 +151,8 @@ export interface ElementCriteria {
 	path?: string;
 	viewport?: Viewport;
 	kind?: ElementKind;
+	/** What the model called a section, one of `SECTION_LABELS`. */
+	label?: SectionLabel;
 	/** Lowercased substring, matched against name and label. */
 	needle?: string;
 }
@@ -174,6 +176,10 @@ export function elementConditions(criteria: ElementCriteria, crawls: RecordId[])
 	if (criteria.kind !== undefined) {
 		conditions.push('kind = $kind');
 		variables.kind = criteria.kind;
+	}
+	if (criteria.label !== undefined) {
+		conditions.push('label = $label');
+		variables.label = criteria.label;
 	}
 	if (criteria.needle) {
 		conditions.push(`(string::lowercase(name) CONTAINS $needle

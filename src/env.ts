@@ -13,5 +13,9 @@ export const variables = defineEnvVars({
 	SURREAL_PASS: { schema: optional },
 	SURREAL_NS: { schema: optional, description: 'SurrealDB namespace' },
 	SURREAL_DB: { schema: optional, description: 'SurrealDB database' },
-	MEDIA_DIR: { schema: optional, description: 'Directory screenshots and crops are stored in' }
+	MEDIA_DIR: { schema: optional, description: 'Directory screenshots and crops are stored in' },
+	REFS_ML_URL: {
+		schema: optional,
+		description: 'Model service from ml/, used to embed search queries, e.g. http://127.0.0.1:8022'
+	}
 });
