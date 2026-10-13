@@ -15,6 +15,7 @@
 		"db:up": "docker compose up -d surrealdb",
 		"crawler": "bun crawler/worker.ts",
 		"crawl": "bun crawler/cli.ts",
+		"enrich": "bun crawler/enrich.ts",
 		"api-key": "bun scripts/api-key.ts"
 	},
 	"devDependencies": {

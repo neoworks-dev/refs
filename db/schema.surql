@@ -1,4 +1,7 @@
 -- Applied on startup by the app and the crawler (see src/lib/server/surreal.ts). Must stay idempotent.
+-- Tables and fields use OVERWRITE so edits here take effect on the next connect. Indexes use
+-- IF NOT EXISTS, because OVERWRITE rebuilds an index on every connect, which took seconds. Changing
+-- an index means a `REMOVE INDEX` by hand first.
 
 -- A website we collect references from.
 DEFINE TABLE OVERWRITE site SCHEMAFULL;
@@ -16,8 +19,8 @@ DEFINE FIELD OVERWRITE cover.desktop ON site TYPE option<record<screen>>;
 DEFINE FIELD OVERWRITE cover.mobile ON site TYPE option<record<screen>>;
 DEFINE FIELD OVERWRITE created_at ON site TYPE datetime DEFAULT time::now() READONLY;
 DEFINE FIELD OVERWRITE updated_at ON site TYPE datetime DEFAULT ALWAYS time::now();
-DEFINE INDEX OVERWRITE site_slug ON site FIELDS slug UNIQUE;
-DEFINE INDEX OVERWRITE site_host ON site FIELDS host UNIQUE;
+DEFINE INDEX IF NOT EXISTS site_slug ON site FIELDS slug UNIQUE;
+DEFINE INDEX IF NOT EXISTS site_host ON site FIELDS host UNIQUE;
 
 -- One crawl job: one site, one viewport. The crawler worker picks up `queued` jobs.
 DEFINE TABLE OVERWRITE crawl SCHEMAFULL;
@@ -36,8 +39,8 @@ DEFINE FIELD OVERWRITE error ON crawl TYPE option<string>;
 DEFINE FIELD OVERWRITE created_at ON crawl TYPE datetime DEFAULT time::now() READONLY;
 DEFINE FIELD OVERWRITE started_at ON crawl TYPE option<datetime>;
 DEFINE FIELD OVERWRITE finished_at ON crawl TYPE option<datetime>;
-DEFINE INDEX OVERWRITE crawl_status ON crawl FIELDS status, created_at;
-DEFINE INDEX OVERWRITE crawl_site ON crawl FIELDS site;
+DEFINE INDEX IF NOT EXISTS crawl_status ON crawl FIELDS status, created_at;
+DEFINE INDEX IF NOT EXISTS crawl_site ON crawl FIELDS site;
 
 -- A captured UI state. `kind = 'page'` is a URL load; `kind = 'state'` is what a click on a page
 -- revealed (menu, dialog, tab). How a screen was reached is the `action` edge pointing at it.
@@ -69,9 +72,15 @@ DEFINE FIELD OVERWRITE image_hash ON screen TYPE string;
 -- Filled in by the model pipeline (milestone 2).
 DEFINE FIELD OVERWRITE page_type ON screen TYPE option<string>;
 DEFINE FIELD OVERWRITE description ON screen TYPE option<string>;
+-- Embedding of the viewport image from the model service, 1024 dimensions of unit length, so that
+-- a text query embedded the same way is matched by cosine distance. 1024 found the same neighbours
+-- as the full 2048 on our screens, where 512 started to return unrelated pages (issue #7).
+DEFINE FIELD OVERWRITE embedding ON screen TYPE option<array<float>>;
 DEFINE FIELD OVERWRITE captured_at ON screen TYPE datetime DEFAULT time::now() READONLY;
-DEFINE INDEX OVERWRITE screen_site ON screen FIELDS site, viewport, seq;
-DEFINE INDEX OVERWRITE screen_crawl ON screen FIELDS crawl;
+DEFINE INDEX IF NOT EXISTS screen_site ON screen FIELDS site, viewport, seq;
+DEFINE INDEX IF NOT EXISTS screen_crawl ON screen FIELDS crawl;
+-- Changing the dimension means removing this index and re-embedding everything.
+DEFINE INDEX IF NOT EXISTS screen_embedding ON screen FIELDS embedding HNSW DIMENSION 1024 DIST COSINE;
 
 -- A UI element cropped from a screen. Rect is in CSS px, page coordinates (relative to the
 -- top-left of the full-page image at scale 1).
@@ -91,9 +100,12 @@ DEFINE FIELD OVERWRITE rect.h ON element TYPE number;
 DEFINE FIELD OVERWRITE media ON element TYPE string;
 -- Filled in by the model pipeline (milestone 2), e.g. 'hero', 'pricing', 'testimonials'.
 DEFINE FIELD OVERWRITE label ON element TYPE option<string>;
+-- Embedding of the crop, same model and dimensions as `screen.embedding`.
+DEFINE FIELD OVERWRITE embedding ON element TYPE option<array<float>>;
 DEFINE FIELD OVERWRITE captured_at ON element TYPE datetime DEFAULT time::now() READONLY;
-DEFINE INDEX OVERWRITE element_screen ON element FIELDS screen;
-DEFINE INDEX OVERWRITE element_site ON element FIELDS site, viewport, kind;
+DEFINE INDEX IF NOT EXISTS element_screen ON element FIELDS screen;
+DEFINE INDEX IF NOT EXISTS element_site ON element FIELDS site, viewport, kind;
+DEFINE INDEX IF NOT EXISTS element_embedding ON element FIELDS embedding HNSW DIMENSION 1024 DIST COSINE;
 
 -- screen -> action -> screen: how the crawler got from one screen to another.
 DEFINE TABLE OVERWRITE action TYPE RELATION IN screen OUT screen SCHEMAFULL;
@@ -101,12 +113,37 @@ DEFINE FIELD OVERWRITE crawl ON action TYPE record<crawl>;
 DEFINE FIELD OVERWRITE kind ON action TYPE string ASSERT $value IN ['navigate', 'click'];
 -- Link text / button name that was used.
 DEFINE FIELD OVERWRITE label ON action TYPE string DEFAULT '';
+-- Where the clicked link or control sat on the source screen. Flows start at main navigation
+-- clicks, so this is what tells them apart. Missing on actions recorded before it existed.
+DEFINE FIELD OVERWRITE region ON action TYPE option<'nav' | 'main' | 'footer' | 'other'>;
 -- Rect of the clicked element on the source screen, CSS px page coordinates.
 DEFINE FIELD OVERWRITE rect ON action TYPE option<object>;
 DEFINE FIELD OVERWRITE rect.x ON action TYPE number;
 DEFINE FIELD OVERWRITE rect.y ON action TYPE number;
 DEFINE FIELD OVERWRITE rect.w ON action TYPE number;
 DEFINE FIELD OVERWRITE rect.h ON action TYPE number;
+
+-- A flow: an ordered run of screens that belongs together, like the pricing pages or a signup
+-- form's steps. Cut out of one crawl's action graph by structure (crawler/flows.ts) and recut
+-- from scratch whenever that runs again; goal-directed exploration will add flows of its own.
+DEFINE TABLE OVERWRITE flow SCHEMAFULL;
+DEFINE FIELD OVERWRITE site ON flow TYPE record<site>;
+DEFINE FIELD OVERWRITE crawl ON flow TYPE record<crawl>;
+DEFINE FIELD OVERWRITE viewport ON flow TYPE string ASSERT $value IN ['desktop', 'mobile'];
+-- 'structure' is cut from the action graph, 'goal' comes from goal-directed exploration.
+DEFINE FIELD OVERWRITE source ON flow TYPE 'structure' | 'goal';
+-- Set from the label of the click that starts the flow; the model replaces it with a real title.
+DEFINE FIELD OVERWRITE title ON flow TYPE string DEFAULT '';
+-- One of a fixed list chosen by the model (milestone 3), e.g. 'onboarding', 'pricing'.
+DEFINE FIELD OVERWRITE category ON flow TYPE option<string>;
+-- The screens in order. `action` is the edge that led to the step and is missing on the first.
+DEFINE FIELD OVERWRITE steps ON flow TYPE array<object> DEFAULT [];
+DEFINE FIELD OVERWRITE steps[*].screen ON flow TYPE record<screen>;
+DEFINE FIELD OVERWRITE steps[*].action ON flow TYPE option<record<action>>;
+DEFINE FIELD OVERWRITE steps[*].caption ON flow TYPE option<string>;
+DEFINE FIELD OVERWRITE created_at ON flow TYPE datetime DEFAULT time::now() READONLY;
+DEFINE INDEX IF NOT EXISTS flow_crawl ON flow FIELDS crawl;
+DEFINE INDEX IF NOT EXISTS flow_site ON flow FIELDS site, viewport;
 
 -- API keys for the MCP server. Only a SHA-256 hash of the key is stored; the key itself is shown
 -- once when it is created and can't be recovered. Keys look like `refs_<random>`.
@@ -119,4 +156,4 @@ DEFINE FIELD OVERWRITE created_at ON api_key TYPE datetime DEFAULT time::now() R
 DEFINE FIELD OVERWRITE last_used_at ON api_key TYPE option<datetime>;
 -- Set when the key is revoked; a revoked key is refused.
 DEFINE FIELD OVERWRITE revoked_at ON api_key TYPE option<datetime>;
-DEFINE INDEX OVERWRITE api_key_hash ON api_key FIELDS hash UNIQUE;
+DEFINE INDEX IF NOT EXISTS api_key_hash ON api_key FIELDS hash UNIQUE;

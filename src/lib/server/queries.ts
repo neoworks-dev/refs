@@ -331,7 +331,7 @@ export async function getSiteOverview(slug: string): Promise<SiteOverview | unde
 
 /** Screens of one crawl in capture order. */
 export function listScreens(crawlId: string): Promise<Screen[]> {
-	return rows<Screen>('SELECT * FROM screen WHERE crawl = $crawl ORDER BY seq', {
+	return rows<Screen>('SELECT * OMIT embedding FROM screen WHERE crawl = $crawl ORDER BY seq', {
 		crawl: new RecordId('crawl', crawlId)
 	});
 }
@@ -346,7 +346,7 @@ export interface ElementListItem extends UiElement {
 export function listElements(crawlId: string, kind?: ElementKind): Promise<ElementListItem[]> {
 	const { conditions, variables } = elementConditions({ kind }, [new RecordId('crawl', crawlId)]);
 	return rows<ElementListItem>(
-		`SELECT *, screen.seq AS screen_seq, screen.path AS screen_path FROM element
+		`SELECT *, screen.seq AS screen_seq, screen.path AS screen_path OMIT embedding FROM element
 		 WHERE ${conditions.join(' AND ')}
 		 ORDER BY screen_seq, rect.y
 		 LIMIT 400`,
@@ -386,7 +386,7 @@ export async function listLibrary(
 		// One extra row tells whether there is a next page without a separate count.
 		rows<LibraryElement>(
 			`SELECT *, screen.seq AS screen_seq, screen.path AS screen_path,
-				site.name AS site_name, site.icon AS site_icon
+				site.name AS site_name, site.icon AS site_icon OMIT embedding
 			 FROM element WHERE ${filtered.conditions.join(' AND ')}
 			 ORDER BY site, screen_seq, rect.y, id
 			 LIMIT $limit`,
@@ -432,16 +432,22 @@ export async function getScreenDetail(
 	screenId: string
 ): Promise<ScreenDetail | undefined> {
 	const screenRecord = new RecordId('screen', screenId);
-	const [screen] = await rows<Screen>('SELECT * FROM screen WHERE id = $screen AND site = $site', {
-		screen: screenRecord,
-		site: new RecordId('site', siteId)
-	});
+	const [screen] = await rows<Screen>(
+		'SELECT * OMIT embedding FROM screen WHERE id = $screen AND site = $site',
+		{
+			screen: screenRecord,
+			site: new RecordId('site', siteId)
+		}
+	);
 	if (!screen) return undefined;
 
 	const [elements, incoming, siblings] = await Promise.all([
-		rows<UiElement>('SELECT * FROM element WHERE screen = $screen ORDER BY rect.y, rect.x', {
-			screen: screenRecord
-		}),
+		rows<UiElement>(
+			'SELECT * OMIT embedding FROM element WHERE screen = $screen ORDER BY rect.y, rect.x',
+			{
+				screen: screenRecord
+			}
+		),
 		rows<{
 			kind: 'navigate' | 'click';
 			label: string;

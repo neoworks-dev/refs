@@ -18,6 +18,52 @@ export type ElementKind =
 	| 'menu'
 	| 'table';
 
+// The model service's fixed vocabularies, so the app can filter by them. The source is
+// ml/refs_ml/schemas.py (PAGE_TYPES and ELEMENT_LABELS['section']): these lists must match it.
+export const PAGE_TYPES = [
+	'home',
+	'pricing',
+	'features',
+	'product',
+	'about',
+	'blog_index',
+	'blog_post',
+	'docs',
+	'signup',
+	'login',
+	'onboarding',
+	'checkout',
+	'cart',
+	'settings',
+	'dashboard',
+	'search',
+	'contact',
+	'careers',
+	'legal',
+	'error',
+	'other'
+] as const;
+export type PageType = (typeof PAGE_TYPES)[number];
+
+export const SECTION_LABELS = [
+	'hero',
+	'features',
+	'pricing',
+	'testimonials',
+	'logos',
+	'faq',
+	'cta',
+	'stats',
+	'team',
+	'footer_cta',
+	'gallery',
+	'comparison',
+	'how_it_works',
+	'newsletter',
+	'other'
+] as const;
+export type SectionLabel = (typeof SECTION_LABELS)[number];
+
 export interface Rect {
 	x: number;
 	y: number;
@@ -96,7 +142,27 @@ export interface Action {
 	crawl: string;
 	kind: 'navigate' | 'click';
 	label: string;
+	region?: 'nav' | 'main' | 'footer' | 'other';
 	rect?: Rect;
+}
+
+export interface FlowStep {
+	screen: string;
+	/** The action that led here; missing on the first step. */
+	action?: string;
+	caption?: string;
+}
+
+export interface Flow {
+	id: string;
+	site: string;
+	crawl: string;
+	viewport: Viewport;
+	source: 'structure' | 'goal';
+	title: string;
+	category?: string;
+	steps: FlowStep[];
+	created_at: string;
 }
 
 export interface ApiKey {
