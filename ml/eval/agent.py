@@ -10,6 +10,7 @@ Screenshots and an action log per task land in eval/runs/<run-name>/<task-name>/
 """
 
 import json
+import os
 import sys
 import time
 from pathlib import Path
@@ -161,7 +162,8 @@ def main() -> None:
     selected = set(sys.argv[2:])
     results = []
     with sync_playwright() as playwright:
-        browser = playwright.chromium.launch()
+        # REFS_HEADED=1 opens a visible window, to watch the agent work.
+        browser = playwright.chromium.launch(headless=os.environ.get("REFS_HEADED") != "1")
         for task in TASKS:
             if selected and task.name not in selected:
                 continue

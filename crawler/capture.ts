@@ -106,7 +106,8 @@ function pageInspectorScript(): Promise<string> {
 /** One browser per crawl, with one context so cookies (e.g. a dismissed banner) persist across pages. */
 export async function openBrowser(viewport: Viewport): Promise<BrowserSession> {
 	const browser = await chromium.launch({
-		headless: true,
+		// REFS_HEADED=1 opens visible windows, to watch what the crawler does.
+		headless: process.env.REFS_HEADED !== '1',
 		// The worker handles SIGINT/SIGTERM itself so it can requeue the crawl before exiting;
 		// Playwright's own handlers would kill the browser mid-crawl and exit the process.
 		handleSIGINT: false,
