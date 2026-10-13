@@ -16,7 +16,8 @@
 		"crawler": "bun crawler/worker.ts",
 		"crawl": "bun crawler/cli.ts",
 		"enrich": "bun crawler/enrich.ts",
-		"api-key": "bun scripts/api-key.ts"
+		"api-key": "bun scripts/api-key.ts",
+		"flows": "bun crawler/flows.ts"
 	},
 	"devDependencies": {
 		"@sveltejs/adapter-node": "^6.0.0",
@@ -24,6 +25,7 @@
 		"@sveltejs/vite-plugin-svelte": "^7.2.0",
 		"@tailwindcss/forms": "^0.5.11",
 		"@tailwindcss/vite": "^4.3.0",
+		"@types/bun": "^1.4.3",
 		"@types/node": "^24",
 		"prettier": "^3.8.3",
 		"prettier-plugin-svelte": "^4.1.0",

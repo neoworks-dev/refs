@@ -36,3 +36,4 @@ vite.config.ts.timestamp-*
 /ml/.venv
 /ml/eval/runs
 __pycache__/
+/.claude/scheduled_tasks.lock
