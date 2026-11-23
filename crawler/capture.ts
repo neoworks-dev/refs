@@ -110,12 +110,12 @@ export async function openBrowser(viewport: Viewport): Promise<BrowserSession> {
 }
 
 /**
- * Launches the browser, headless unless `REFS_HEADED=1` is set to watch what the crawler does.
- * Launch as few as possible: see `closeBrowser` for why.
+ * Launches the browser, headless unless `headed` is passed or `REFS_HEADED=1` is set to watch what
+ * the crawler does. Launch as few as possible: see `closeBrowser` for why.
  */
-export async function launchBrowser(): Promise<Browser> {
+export async function launchBrowser(options: { headed?: boolean } = {}): Promise<Browser> {
 	return await chromium.launch({
-		headless: process.env.REFS_HEADED !== '1',
+		headless: !(options.headed === true || process.env.REFS_HEADED === '1'),
 		// The worker handles SIGINT/SIGTERM itself so it can requeue the crawl before exiting;
 		// Playwright's own handlers would kill the browser mid-crawl and exit the process.
 		handleSIGINT: false,
@@ -221,9 +221,25 @@ const KNOWN_ACCEPT_BUTTONS = [
 	'#truste-consent-button', // TrustArc
 	'#didomi-notice-agree-button', // Didomi
 	'.fc-cta-consent', // Google Funding Choices
-	'.cc-allow, .cc-accept', // Cookie Consent by Osano
+	'.cc-allow, .cc-accept', // Cookie Consent by Osano (the old one)
 	'button[data-cookiefirst-action="accept"]', // CookieFirst
-	'button[data-testid="uc-accept-all-button"]' // Usercentrics
+	'button[data-testid="uc-accept-all-button"]', // Usercentrics
+	'button.sp_choice_type_11', // Sourcepoint, inside its iframe
+	'.qc-cmp2-summary-buttons button[mode="primary"]', // Quantcast Choice
+	'.klaro .cm-btn-success, .klaro .cm-btn-accept-all', // Klaro
+	'a._brlbs-btn-accept-all, button._brlbs-btn-accept-all', // Borlabs Cookie
+	'.cmplz-btn.cmplz-accept', // Complianz
+	'.cky-btn-accept, button[data-cky-tag="accept-button"]', // CookieYes
+	'#iubenda-cs-accept-btn, .iubenda-cs-accept-btn', // Iubenda
+	'button[data-tid="banner-accept"]', // Termly
+	'.osano-cm-accept-all', // Osano
+	'#shopify-pc__banner__btn-accept', // Shopify's customer privacy banner
+	'#cookiescript_accept', // Cookie Script
+	'#axeptio_btn_acceptAll', // Axeptio
+	'button[data-cc="accept-all"], button.cm__btn[data-role="all"]', // orestbida's CookieConsent
+	'#cmpwelcomebtnyes a, .cmptxt_btn_yes', // consentmanager.net
+	'#hs-eu-confirmation-button', // HubSpot
+	'#wt-cli-accept-all-btn, #cookie_action_close_header' // GDPR Cookie Consent (WordPress)
 ].join(', ');
 
 /**
@@ -240,18 +256,32 @@ const COOKIE_BANNER = [
 	'onetrust',
 	'cookiebot',
 	'didomi',
-	'trustarc'
+	'trustarc',
+	'sp_message',
+	'qc-cmp',
+	'klaro',
+	'borlabs',
+	'complianz',
+	'cmplz',
+	'cky',
+	'iubenda',
+	'termly',
+	'osano',
+	'ketch',
+	'lanyard',
+	'axeptio',
+	'cookiescript'
 ]
 	.flatMap((word) => [`[id*="${word}" i]`, `[class*="${word}" i]`, `[aria-label*="${word}" i]`])
 	.join(', ');
 
 /** Button names that accept everything. "Reject", "Manage" and "Settings" must not match. */
 const ACCEPT_LABEL =
-	/^(accept( all)?( cookies)?( (&|and) close)?|i accept|i agree|agree( and (close|continue))?|allow all( cookies)?|allow cookies|allow|got it|ok|okay|alle (akzeptieren|erlauben|zulassen)|akzeptieren|zustimmen|einverstanden)$/i;
+	/^(accept( all)?( cookies)?( (&|and) close)?|i accept|i agree|agree( and (close|continue))?|allow all( cookies)?|allow cookies|allow|got it|ok|okay|accept (&|and) continue|alle (cookies )?(akzeptieren|erlauben|zulassen)( (&|und) weiter)?|akzeptieren( (&|und) weiter)?|zustimmen( (&|und) weiter)?|ich stimme zu|einverstanden|tout accepter|accepter( et (fermer|continuer)| tous les cookies)?|aceptar( todo| todas)?|accetta( tutti| tutto)?|alles accepteren)$/i;
 
 /** Consent managers that render in an iframe usually give it away in the iframe URL. */
 const CONSENT_IFRAME_URL =
-	/consent|cookie|privacy|gdpr|cmp|sp_message|onetrust|trustarc|usercentrics|didomi/i;
+	/consent|cookie|privacy|gdpr|cmp|sp_message|onetrust|trustarc|usercentrics|didomi|quantcast/i;
 
 /** How long a banner may take to appear after load, on the first page only. */
 const BANNER_APPEAR_TIMEOUT_MS = 3000;
@@ -373,6 +403,33 @@ async function clickUntilGone(acceptButton: Locator): Promise<boolean> {
 	}
 }
 
+/**
+ * Makes sure no consent banner is on the page: accepts it where there is a usable button, then
+ * hides whatever is still there (a banner with only "settings", a notice with no button, a consent
+ * wall) together with its backdrop, and undoes the scroll lock. See `removeConsentBanners` in page.ts.
+ * Returns whether a banner was accepted.
+ */
+export async function clearConsentBanners(
+	page: Page,
+	options: { waitForBanner: boolean }
+): Promise<boolean> {
+	const accepted = await acceptCookieBanner(page, options);
+	await page.evaluate(() => window.pageInspector!.removeConsentBanners());
+	return accepted;
+}
+
+/**
+ * The cheap form of `clearConsentBanners` for right before a capture, where the page was cleared
+ * moments ago and nearly always still is: one look inside the page, and only a banner that
+ * showed up since (a late one, or one a click opened) costs an accept attempt.
+ */
+async function clearLateConsentBanners(page: Page): Promise<void> {
+	if (await page.evaluate(() => window.pageInspector!.hasConsentBanner())) {
+		await acceptCookieBanner(page, { waitForBanner: false });
+	}
+	await page.evaluate(() => window.pageInspector!.removeConsentBanners());
+}
+
 // --- loading a page --------------------------------------------------------------------------
 
 /** Many sites never reach network idle (polling, websockets), so waiting for it is capped. */
@@ -401,7 +458,7 @@ export async function loadPage(
 	} catch (error) {
 		if (!(error instanceof errors.TimeoutError)) throw error;
 	}
-	await acceptCookieBanner(page, options);
+	await clearConsentBanners(page, options);
 	await stabilizeLoadedPage(page);
 	return response;
 }
@@ -417,7 +474,7 @@ export async function stabilizeLoadedPage(page: Page): Promise<void> {
 		MAX_SCROLL_STEPS
 	] as const);
 	// Some banners only appear after a delay or once the page is scrolled, so look once more.
-	await acceptCookieBanner(page, { waitForBanner: false });
+	await clearConsentBanners(page, { waitForBanner: false });
 	await page.evaluate(() => document.fonts.ready);
 	await page.waitForTimeout(FINAL_SETTLE_MS);
 }
@@ -508,6 +565,7 @@ export async function captureScreen(request: CaptureRequest): Promise<CapturedSc
 	const keyPrefix = `sites/${ctx.siteId}/${ctx.job.viewport}/${screenId}`;
 
 	const title = await page.title();
+	await clearLateConsentBanners(page);
 	await page.evaluate(() => window.pageInspector!.hideChatLaunchers());
 	const found = await page.evaluate(() => window.pageInspector!.findElements());
 	const viewportPng = await viewportScreenshot(page);

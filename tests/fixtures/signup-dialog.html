@@ -1,0 +1,22 @@
+<!doctype html>
+<title>Dialogs that mention privacy but are not consent banners</title>
+<style>
+	body {
+		margin: 0;
+		font-family: sans-serif;
+	}
+	dialog {
+		position: fixed;
+		padding: 16px;
+	}
+</style>
+<main><h1>Home</h1></main>
+<dialog open id="signup">
+	<p>By continuing you accept our terms and privacy policy.</p>
+	<input type="email" placeholder="Email" />
+	<button>Agree and continue</button>
+</dialog>
+<div style="position: fixed; right: 16px; bottom: 16px; background: #ffd; padding: 12px" id="terms">
+	<p>We updated our privacy policy.</p>
+	<button>OK</button>
+</div>

@@ -3,7 +3,8 @@
 //
 // This file is bundled with Bun (see `pageInspectorScript` in capture.ts) and injected into every
 // document, where it exposes `window.pageInspector`. The Node side calls it through
-// `page.evaluate`. Cookie banners are not handled here: Playwright locators do that job better.
+// `page.evaluate`. Accepting a cookie banner is done with Playwright locators (see capture.ts); what
+// is left here is removing the banners that could not be accepted.
 //
 // Rects are in CSS px, relative to the top-left of the full page.
 import type { ElementKind, Rect } from '#lib/types.ts';
@@ -23,15 +24,20 @@ export interface PageLink {
 	href: string;
 	text: string;
 	region: LinkRegion;
-	/** Undefined when the link isn't rendered (e.g. inside a closed menu). */
-	rect?: Rect;
 }
 
-export interface ClickTarget {
+/** Something a visitor can click or type into, as a model choosing the next action is told about it. */
+export interface Clickable {
+	/** The ARIA role, explicit or implied by the tag: link, button, textbox, tab, menuitem and so on. */
+	role: string;
 	name: string;
+	/** Links only. */
+	href?: string;
 	region: LinkRegion;
-	/** Lower ranks are tried first. */
-	rank: number;
+	/** False for controls in the DOM that are not shown yet, like the entries of a closed menu. */
+	visible: boolean;
+	/** What a text field, a select or a checkbox currently holds, so a model can see it is filled. */
+	value?: string;
 	rect: Rect;
 }
 
@@ -225,11 +231,135 @@ function links(): PageLink[] {
 		found.push({
 			href: anchor.href,
 			text: accessibleName(anchor),
-			region: regionOf(anchor),
-			rect: isVisible(anchor) ? pageRect(anchor) : undefined
+			region: regionOf(anchor)
 		});
 	}
 	return found;
+}
+
+/** Everything a visitor can interact with. Elements with a role inside these are counted on their own. */
+const CLICKABLE_SELECTOR = [
+	'a[href]',
+	'button',
+	'input:not([type="hidden"])',
+	'select',
+	'textarea',
+	'summary',
+	'[contenteditable="true"]',
+	...['button', 'link', 'tab', 'menuitem', 'switch', 'checkbox', 'radio', 'combobox', 'option'].map(
+		(role) => `[role="${role}"]`
+	)
+].join(', ');
+/** The role a tag has without an explicit `role` attribute, for the tags in the selector above. */
+const IMPLICIT_ROLES: Record<string, string> = {
+	A: 'link',
+	BUTTON: 'button',
+	SELECT: 'combobox',
+	TEXTAREA: 'textbox',
+	SUMMARY: 'button'
+};
+/** Input types that are buttons or toggles; every other type is a text field. */
+const INPUT_ROLES: Record<string, string> = {
+	button: 'button',
+	submit: 'button',
+	reset: 'button',
+	image: 'button',
+	checkbox: 'checkbox',
+	radio: 'radio',
+	range: 'slider'
+};
+/** Bounds the work on huge pages, like MAX_LINKS. */
+const MAX_CLICKABLES = 800;
+
+/** The attribute `clickables({ mark: true })` numbers elements with, to find one again by its number. */
+const CLICKABLE_MARK = 'data-refs-clickable';
+
+/**
+ * Everything a visitor can interact with, in document order. With `mark`, each element gets its
+ * position in the returned list as an attribute, so the Node side can act on "element 12" with
+ * `[data-refs-clickable="12"]`; marks from an earlier call are removed first, because the numbers
+ * of a changed page do not match them any more.
+ */
+function clickables(options: { mark: boolean } = { mark: false }): Clickable[] {
+	if (options.mark) {
+		for (const marked of document.querySelectorAll(`[${CLICKABLE_MARK}]`)) {
+			marked.removeAttribute(CLICKABLE_MARK);
+		}
+	}
+	const found: Clickable[] = [];
+	for (const element of document.querySelectorAll(CLICKABLE_SELECTOR)) {
+		if (found.length >= MAX_CLICKABLES) break;
+		// A button inside a link, or an icon with a role inside a button, is clicked through its
+		// outer control, and listing both would show the model one control twice.
+		if (element.parentElement?.closest(CLICKABLE_SELECTOR)) continue;
+
+		let role = element.getAttribute('role') ?? IMPLICIT_ROLES[element.tagName] ?? 'textbox';
+		let name = accessibleName(element);
+		if (element instanceof HTMLInputElement) {
+			role = INPUT_ROLES[element.type] ?? (element.type === 'search' ? 'searchbox' : 'textbox');
+			// A text field has no text of its own; what it is for is in its label or placeholder.
+			if (name === '') name = cleanText(element.labels?.[0]?.textContent || element.placeholder);
+		}
+		// SVG <a> elements expose `href` as an SVGAnimatedString, like in links().
+		const isLink = element instanceof HTMLAnchorElement && typeof element.href === 'string';
+		let value: string | undefined;
+		if (
+			element instanceof HTMLInputElement &&
+			(element.type === 'checkbox' || element.type === 'radio')
+		) {
+			value = element.checked ? 'checked' : 'not checked';
+		} else if (
+			element instanceof HTMLInputElement ||
+			element instanceof HTMLTextAreaElement ||
+			element instanceof HTMLSelectElement
+		) {
+			value = cleanText(element.value);
+		}
+		if (options.mark) element.setAttribute(CLICKABLE_MARK, String(found.length));
+		found.push({
+			role,
+			name,
+			href: isLink ? element.href : undefined,
+			region: regionOf(element),
+			visible: isVisible(element),
+			value,
+			rect: pageRect(element)
+		});
+	}
+	return found;
+}
+
+/**
+ * The text a visitor sees in the viewport, in document order, up to `maxCharacters`. Two screens
+ * with the same text and controls look the same to a person, which is how a browser agent tells
+ * whether its last action changed anything; a scroll that only moves an animation does not count.
+ */
+function viewportText(maxCharacters: number): string {
+	const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
+	const range = document.createRange();
+	const parts: string[] = [];
+	let length = 0;
+	for (
+		let node = walker.nextNode();
+		node !== null && length < maxCharacters;
+		node = walker.nextNode()
+	) {
+		const parent = node.parentElement;
+		if (parent === null || HIDDEN_TAGS.has(parent.tagName) || !isVisible(parent)) continue;
+		const text = cleanText(node.textContent, maxCharacters);
+		if (text === '') continue;
+		range.selectNodeContents(node);
+		const box = range.getBoundingClientRect();
+		const onScreen =
+			box.bottom > 0 &&
+			box.top < window.innerHeight &&
+			box.right > 0 &&
+			box.left < window.innerWidth;
+		if (!onScreen) continue;
+		parts.push(text);
+		length += text.length + 1;
+	}
+	return parts.join('\n').slice(0, maxCharacters);
 }
 
 /** Time for lazy-load observers and scroll animations to react to each scroll step. */
@@ -403,66 +533,286 @@ function hideChatLaunchers(): number {
 	return launchers.size;
 }
 
-// --- click targets and what a click revealed --------------------------------------------------
-
-const HAS_POPUP = '[aria-haspopup]:not([aria-haspopup="false"])';
-
-/** Selectors in the order they're tried (the index is the rank): header menu triggers reveal the most. */
-const CLICK_TARGET_SELECTORS = [
-	`header ${HAS_POPUP}, nav ${HAS_POPUP}, [role="banner"] ${HAS_POPUP}, [role="navigation"] ${HAS_POPUP}`,
-	'header [aria-expanded="false"], nav [aria-expanded="false"]',
-	'[role="tab"]:not([aria-selected="true"])',
-	HAS_POPUP,
-	'summary',
-	'header button, nav button, [role="banner"] button, header [role="button"], nav [role="button"]',
-	'[aria-expanded="false"]'
-];
-
-/** Form fields are only focused by a click, they reveal nothing. */
-const NEVER_CLICK = 'input, select, textarea, [disabled], [aria-disabled="true"]';
-/** Smaller controls are decorations or hit-test helpers. */
-const MIN_CLICK_TARGET_SIZE = 8;
+// --- consent banners -------------------------------------------------------------------------
 
 /**
- * Clickable controls in the first viewport. Only those, because clicking one further down would
- * scroll the page and make the before/after comparison meaningless.
+ * What the id, class or label of a consent banner says. Besides the plain words, the consent
+ * managers are named, because some banners never say "cookie" (`qc-cmp2-container`, `sp_message`).
+ * The short names need a non-letter before them so that "sketch" is not Ketch. Bare "cmp" is left
+ * out on purpose: Adobe Experience Manager prefixes every component class with it.
  */
-function clickTargets(): ClickTarget[] {
-	const seen = new Set<Element>();
-	const targets: ClickTarget[] = [];
-	CLICK_TARGET_SELECTORS.forEach((selector, rank) => {
-		for (const element of document.querySelectorAll(selector)) {
-			if (seen.has(element)) continue;
-			seen.add(element);
-			if (element.matches(NEVER_CLICK) || !isVisible(element)) continue;
+const CONSENT_MARKUP = new RegExp(
+	'cookie|consent|gdpr|dsgvo|usercentrics|onetrust|didomi|trustarc|truste|qc-cmp|sp_message|' +
+		'cmpbox|cmpwrapper|borlabs|complianz|cmplz|iubenda|cookiescript|shopify-pc|privacy-banner|' +
+		'privacy-notice|privacy-settings|' +
+		'(^|[^a-z])(ot-sdk|klaro|osano|termly|cky|ketch|lanyard|axeptio|cc-window|cc-main|cc-banner)',
+	'i'
+);
 
-			// Plain links navigate, which is link discovery rather than a state. Popup triggers may be anchors.
-			const opensSomething = element.matches(`${HAS_POPUP}, [aria-expanded]`);
-			if (element.tagName === 'A' && element.hasAttribute('href') && !opensSomething) continue;
+/** Consent managers that render in an iframe usually give it away in the iframe URL. */
+const CONSENT_FRAME_SOURCE =
+	/consent|cookie|privacy-mgmt|sp_message|onetrust|trustarc|usercentrics|didomi|gdpr|quantcast|cmp\./i;
 
-			// Any submit inside a form is off limits. A <button> without a type attribute is a submit.
-			if (
-				element instanceof HTMLButtonElement &&
-				element.form !== null &&
-				element.type === 'submit'
-			)
-				continue;
+/**
+ * What an unmarked banner talks about. Plain "privacy" is left out: a login or sign-up dialog
+ * says "Agree and continue" and mentions the privacy policy, and it is not a consent banner.
+ */
+const CONSENT_NOTICE_WORDS = /cookie|tracking|gdpr|dsgvo|consent|einwilligung/i;
 
-			const box = element.getBoundingClientRect();
-			const inFirstViewport =
-				box.width >= MIN_CLICK_TARGET_SIZE &&
-				box.height >= MIN_CLICK_TARGET_SIZE &&
-				box.top >= 0 &&
-				box.top < window.innerHeight &&
-				box.left >= 0 &&
-				box.left < window.innerWidth;
-			const name = accessibleName(element);
-			if (inFirstViewport && name)
-				targets.push({ name, region: regionOf(element), rank, rect: pageRect(element) });
-		}
-	});
-	return targets;
+/**
+ * The start of a button label on a consent banner: accept, reject or open the settings, in the
+ * languages the sites we capture use. It is anchored because "Accept invitation" is nothing like
+ * "Accept all".
+ */
+const CONSENT_CONTROL_LABEL =
+	/^(accept|agree|allow|reject|decline|deny|refuse|got it|ok$|okay$|i understand|manage|more options|(cookie|privacy|consent) (settings|preferences)|settings$|preferences$|customi[sz]e|only (necessary|essential)|necessary only|continue without|alle |nur |akzeptieren|zustimmen|einverstanden|ablehnen|einstellungen|anpassen|verstanden|tout accepter|accepter|refuser|param[eè]tres|personnaliser|aceptar|rechazar|configurar|accetta|rifiuta|personalizza)/i;
+
+/** A real banner is a few sentences. A fixed layer with much more text is part of the page. */
+const MAX_UNMARKED_BANNER_TEXT = 1500;
+/** A banner that is part of the page flow (not floating) is a slim bar, never a section of content. */
+const MAX_IN_FLOW_BANNER_TEXT = 800;
+const MAX_IN_FLOW_BANNER_HEIGHT_RATIO = 0.5;
+const MIN_IN_FLOW_BANNER_WIDTH_RATIO = 0.9;
+/** An in-flow banner sits at the very top of the document, pushing the page down. */
+const IN_FLOW_BANNER_TOP_REACH = 100;
+/** How often the guard of a recording looks for a banner that appeared since. */
+const CONSENT_GUARD_INTERVAL_MS = 500;
+
+/** Every element of the document, including those inside open shadow roots. */
+function allElements(root: ParentNode): Element[] {
+	const found: Element[] = [];
+	for (const element of root.querySelectorAll('*')) {
+		found.push(element);
+		if (element.shadowRoot) found.push(...allElements(element.shadowRoot));
+	}
+	return found;
 }
+
+function markupOf(element: Element): string {
+	return [
+		element.id,
+		element.getAttribute('class'),
+		element.getAttribute('aria-label'),
+		element.getAttribute('data-testid'),
+		element.getAttribute('title'),
+		// The URL of an iframe says what it holds, and is the only thing a banner frame shows us.
+		element instanceof HTMLIFrameElement ? element.src : ''
+	].join(' ');
+}
+
+/** Whether the element, or the shadow host it lives in, is marked as part of a consent banner. */
+function isMarkedConsent(element: Element): boolean {
+	if (CONSENT_MARKUP.test(markupOf(element))) return true;
+	const root = element.getRootNode();
+	return root instanceof ShadowRoot && isMarkedConsent(root.host);
+}
+
+function isPinned(style: CSSStyleDeclaration): boolean {
+	return style.position === 'fixed' || style.position === 'sticky';
+}
+
+/** Elements and their shadow root content: textContent alone leaves out what a shadow root renders. */
+function deepQuery(element: Element, selector: string): Element[] {
+	return [
+		...element.querySelectorAll(selector),
+		...(element.shadowRoot?.querySelectorAll(selector) ?? [])
+	];
+}
+
+/**
+ * Whether an element is a consent banner, backdrop or notice, by what it looks like. Anything
+ * that holds the page's main content or navigation is never one, because a page's own "privacy"
+ * section or a fixed app shell must stay. Three kinds count:
+ * - a pinned (fixed or sticky) element marked by its markup as consent, which includes the empty
+ *   backdrops and the small "cookie settings" badges the consent managers leave behind;
+ * - a pinned element with no such markup whose text is about cookies or tracking and which has
+ *   the buttons of a consent choice, like Vercel's plain floating box;
+ * - a slim bar at the top of the page flow with both the markup and the buttons.
+ */
+function isConsentBanner(element: Element): boolean {
+	if (element === document.body || element === document.documentElement) return false;
+	// The cheap rejections first: this runs for every element of the page, on a timer during recordings.
+	const style = getComputedStyle(element);
+	const isMarked = isMarkedConsent(element);
+	if (!isPinned(style) && !isMarked) return false;
+	if (!element.checkVisibility({ checkVisibilityCSS: true })) return false;
+	const box = element.getBoundingClientRect();
+	if (box.width === 0 || box.height === 0) return false;
+	if (['MAIN', 'NAV', 'HEADER'].includes(element.tagName)) return false;
+	if (deepQuery(element, 'main, [role="main"]').length > 0) return false;
+
+	if (element instanceof HTMLIFrameElement) {
+		return CONSENT_FRAME_SOURCE.test(element.src) && isPinned(style);
+	}
+	if (isPinned(style) && isMarked) return true;
+
+	const text = (element.textContent ?? '') + (element.shadowRoot?.textContent ?? '');
+	const hasConsentButtons = deepQuery(
+		element,
+		'button, [role="button"], a, input[type="button"], input[type="submit"]'
+	).some((control) =>
+		CONSENT_CONTROL_LABEL.test(
+			cleanText(
+				control instanceof HTMLInputElement ? control.value : (control as HTMLElement).innerText
+			)
+		)
+	);
+	if (!hasConsentButtons) return false;
+	// A text field means a form or a sign-up dialog, not a banner.
+	if (
+		deepQuery(
+			element,
+			'input:not([type="checkbox"]):not([type="radio"]):not([type="button"]):not([type="submit"]), textarea, select'
+		).length > 0
+	)
+		return false;
+
+	if (isPinned(style)) {
+		// A sticky element only counts when it is pinned to an edge of the viewport right now,
+		// because sticky table headers and sidebars are everywhere.
+		const isPinnedToEdge =
+			style.position === 'fixed' || box.top <= 0 || box.bottom >= window.innerHeight - 1;
+		return (
+			isPinnedToEdge && text.length <= MAX_UNMARKED_BANNER_TEXT && CONSENT_NOTICE_WORDS.test(text)
+		);
+	}
+
+	if (!isMarked || deepQuery(element, 'nav, header').length > 0) return false;
+	const isSlimBar =
+		box.width >= window.innerWidth * MIN_IN_FLOW_BANNER_WIDTH_RATIO &&
+		box.height <= window.innerHeight * MAX_IN_FLOW_BANNER_HEIGHT_RATIO;
+	return (
+		isSlimBar &&
+		box.top + window.scrollY <= IN_FLOW_BANNER_TOP_REACH &&
+		text.length <= MAX_IN_FLOW_BANNER_TEXT
+	);
+}
+
+/** Banners that are visible or about to be, as `removeConsentBanners` would hide them. */
+function findConsentBanners(): Element[] {
+	return allElements(document).filter(isConsentBanner);
+}
+
+/** Whether a banner is covering part of the viewport right now, so it is worth trying to accept it. */
+function hasConsentBanner(): boolean {
+	return findConsentBanners().some((banner) => {
+		const box = banner.getBoundingClientRect();
+		const isOnScreen =
+			box.bottom > 0 &&
+			box.top < window.innerHeight &&
+			box.right > 0 &&
+			box.left < window.innerWidth;
+		return isOnScreen && getComputedStyle(banner).opacity !== '0';
+	});
+}
+
+/** An empty fixed layer over most of the viewport, which dims the page behind a banner. */
+function findBackdrops(banners: Element[]): Element[] {
+	// A backdrop is a sibling of the banner or of one of its ancestors, never somewhere else in the page.
+	const neighbours = new Set<Element>();
+	for (const banner of banners) {
+		for (
+			let node: Element | null = banner;
+			node && node !== document.body;
+			node = node.parentElement
+		) {
+			for (const sibling of node.parentElement?.children ?? []) neighbours.add(sibling);
+		}
+	}
+	return [...neighbours].filter((candidate) => {
+		const style = getComputedStyle(candidate);
+		const box = candidate.getBoundingClientRect();
+		if (!['fixed', 'absolute'].includes(style.position)) return false;
+		// The page's own full-screen backgrounds sit behind the content, with no or a negative z-index.
+		if (!(Number.parseInt(style.zIndex) > 0)) return false;
+		const coversViewport =
+			box.width >= window.innerWidth * OVERLAY_VIEWPORT_RATIO &&
+			box.height >= window.innerHeight * OVERLAY_VIEWPORT_RATIO;
+		const dimsPage = colorAlpha(style.backgroundColor) > 0 || style.backdropFilter !== 'none';
+		const isEmpty =
+			cleanText(candidate.textContent) === '' &&
+			candidate.querySelector('img, video, canvas, svg, iframe, input, picture') === null;
+		return coversViewport && dimsPage && isEmpty && candidate.checkVisibility();
+	});
+}
+
+/** Whether a banner was ever hidden in this document, which is when a scroll lock is ours to undo. */
+let hasHiddenConsentBanner = false;
+
+/**
+ * Banners lock the page behind them so a visitor can't scroll past the choice: overflow hidden on
+ * the root, or `position: fixed` on the body (iOS style, with the scroll offset as a negative top).
+ */
+function unlockScrolling(): void {
+	const body = document.body;
+	if (body === null) return;
+	const bodyStyle = getComputedStyle(body);
+	if (bodyStyle.position === 'fixed') {
+		const lockedScrollTop = -Number.parseFloat(bodyStyle.top) || 0;
+		body.style.setProperty('position', 'static', 'important');
+		body.style.setProperty('top', 'auto', 'important');
+		window.scrollTo({ top: lockedScrollTop, behavior: 'instant' });
+	}
+	for (const root of [document.documentElement, body]) {
+		if (['hidden', 'clip'].includes(getComputedStyle(root).overflowY)) {
+			root.style.setProperty('overflow-y', 'visible', 'important');
+		}
+	}
+}
+
+/**
+ * Hides every consent banner on the page together with its backdrop, and gives the scrolling back
+ * that the banner took. Used when a banner could not be accepted (only "settings" buttons, a notice
+ * with no way out, a consent wall), because a screenshot must never show one. Returns how many
+ * banners it hid.
+ */
+function removeConsentBanners(): number {
+	const banners = findConsentBanners();
+	const backdrops = findBackdrops(banners);
+	for (const element of [...banners, ...backdrops]) {
+		(element as HTMLElement).style.setProperty('display', 'none', 'important');
+	}
+	if (banners.length > 0) hasHiddenConsentBanner = true;
+	if (hasHiddenConsentBanner) unlockScrolling();
+	return banners.length;
+}
+
+let consentGuard: ReturnType<typeof setInterval> | undefined;
+
+/**
+ * Keeps hiding banners for as long as the page lives, so one that shows up in the middle of a
+ * recording never reaches a frame. Two mechanisms work together. A mutation observer looks at just
+ * the elements that were added or changed, and runs before the next paint, so a banner that is
+ * inserted into the page is hidden before a frame shows it. A timer sweeps the whole page, for
+ * banners that appear inside a shadow root, where mutations don't reach us.
+ */
+function keepConsentBannersHidden(): void {
+	if (consentGuard !== undefined) return;
+	consentGuard = setInterval(removeConsentBanners, CONSENT_GUARD_INTERVAL_MS);
+	new MutationObserver((records) => {
+		const touched = new Set<Element>();
+		for (const record of records) {
+			if (record.target instanceof Element && record.type === 'attributes')
+				touched.add(record.target);
+			for (const node of record.addedNodes) {
+				if (!(node instanceof Element)) continue;
+				touched.add(node);
+				for (const descendant of allElements(node)) touched.add(descendant);
+				if (node.shadowRoot) for (const inner of allElements(node.shadowRoot)) touched.add(inner);
+			}
+		}
+		if ([...touched].some(isConsentBanner)) removeConsentBanners();
+	}).observe(document, {
+		childList: true,
+		subtree: true,
+		attributes: true,
+		// What a script toggles to show a banner that was in the page all along.
+		attributeFilter: ['class', 'style', 'hidden', 'open']
+	});
+	removeConsentBanners();
+}
+
+// --- what a click revealed -------------------------------------------------------------------
 
 const DIALOG_SELECTOR = '[role="dialog"], [role="alertdialog"], [aria-modal="true"], dialog[open]';
 const MENU_SELECTOR = '[role="menu"], [role="listbox"]';
@@ -817,9 +1167,13 @@ const pageInspector = {
 	domSkeleton,
 	pageDetails,
 	links,
+	clickables,
+	viewportText,
 	scrollThrough,
 	hideChatLaunchers,
-	clickTargets,
+	hasConsentBanner,
+	removeConsentBanners,
+	keepConsentBannersHidden,
 	snapshotVisible,
 	newPanels,
 	findElements,

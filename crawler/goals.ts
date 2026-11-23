@@ -1,321 +1,409 @@
-// Setting goals for a crawled site: the model lists what a visitor could want to do on each page,
-// and the lists are merged into one set of distinct goals in the order worth trying them.
-import type { Surreal } from 'surrealdb';
-import { RecordId } from '#lib/server/surreal.ts';
-import type { CrawlContext } from './crawl.ts';
-import { callModel, ItemSkipped } from './enrich.ts';
+// Planning what to capture on a site. One call to the model looks at the landing page and, with
+// what it knows about the product, lists the flows worth recording; trajectory.ts then runs each.
+import type { Page } from 'playwright';
+import { chat, modelConfigFromEnv, imageDataUri, reasoningFromEnv } from '#lib/server/models.ts';
+import { FLOW_CATEGORIES, FLOW_CATEGORY_DESCRIPTIONS, type FlowCategory } from '#lib/types.ts';
+import { isSameSite, normalizeUrl } from './rules.ts';
 
-/** Goals asked for per page. Most pages support two or three; the model may return fewer. */
-const GOALS_PER_PAGE = 5;
-/**
- * Pages that offer nothing to plan from, whether or not there is an account: errors and payment,
- * and the login and sign-up forms. With an account those two are covered by the one sign-up or
- * login goal that exploration writes itself; planning from them only produced a second sign-up.
- */
-const ALWAYS_UNPLANNED_PAGE_TYPES = ['error', 'checkout', 'cart', 'login', 'signup'];
-/**
- * Pages that only exist behind a login. Without an account nothing on them can be tried, and the
- * model only listed goals that type a password. With one they are worth planning from.
- */
-const UNPLANNED_PAGE_TYPES_WITHOUT_ACCOUNT = ['onboarding', 'settings', 'dashboard'];
-/** The model sees the navigation labels as context, and a long list only costs tokens. */
-const MAX_NAV_LABELS = 20;
-const MAX_NAV_LABEL_CHARACTERS = 40;
-/** The kinds of element that say what a visitor can do on a page, most telling first. */
-const INTERACTIVE_KINDS = ['form', 'input', 'dialog', 'menu', 'table', 'nav', 'button'] as const;
+const models = modelConfigFromEnv(process.env);
 
-export interface MappedPage {
-	id: string;
-	url: string;
-	path: string;
-	title: string;
-	pageType: string;
-	description: string;
-	/** Media key of the viewport screenshot. */
-	image: string;
-	depth: number;
-	/** Controls on the page, like `form: Subscribe` or `opens when clicked: Products`. */
-	interactiveParts: string[];
-}
-
-export interface PlannedGoal {
+/** One flow to record, as the model planned it. */
+export interface PlannedFlow {
+	/** The goal in a visitor's words, which is also the flow's title. */
 	goal: string;
-	category: string;
-	startPath: string;
+	category: FlowCategory;
+	/** The area of the site the model filed the flow under. */
+	area: string;
+	/** Where the browser starts: usually the landing page, sometimes a deeper page the model knows. */
+	startUrl: string;
 	/** What the screen shows once the goal is reached. */
 	success: string;
-	/** How many actions the model thinks the goal takes at least. */
-	actions: number;
 	/** The goal needs the demo account's login, so its browser starts logged in. */
 	signedIn: boolean;
-	embedding: number[];
 }
 
-/**
- * The pages the crawl captured, with what the models and the crawler know about each. Pages that
- * exploration itself reached on an earlier run were captured after the crawl finished and are left
- * out, or every run would plan from the last one's finds. With `signedInScreens` (screen ids) it
- * loads exactly those instead: the pages exploration captured while logged in, which are the
- * starting points of goals behind the login.
- */
-export async function loadMappedPages(
-	db: Surreal,
-	crawl: RecordId,
-	crawlFinishedAt: Date | undefined,
-	signedInScreens?: string[]
-): Promise<MappedPage[]> {
-	const which =
-		signedInScreens === undefined
-			? 'captured_at <= $capturedBefore AND signed_in IS NONE'
-			: 'id IN $screens AND signed_in = true';
-	const [pages, elements, clicks] = await db
-		.query(
-			`SELECT id, url, path, title, page_type, description, media.viewport AS image, depth FROM screen
-			 	WHERE crawl = $crawl AND kind = 'page' AND captured_at <= $capturedBefore ORDER BY seq;
-			 SELECT screen, kind, name FROM element
-			 	WHERE crawl = $crawl AND kind IN $kinds AND name != '';
-			 SELECT in AS screen, label FROM action WHERE crawl = $crawl AND kind = 'click' AND label != ''`,
-			{ crawl, kinds: INTERACTIVE_KINDS, capturedBefore: crawlFinishedAt ?? new Date() }
-		)
-		.collect<
-			[
-				{
-					id: RecordId;
-					url: string;
-					path: string;
-					title: string;
-					page_type?: string;
-					description?: string;
-					image: string;
-					depth: number;
-				}[],
-				{ screen: RecordId; kind: (typeof INTERACTIVE_KINDS)[number]; name: string }[],
-				{ screen: RecordId; label: string }[]
-			]
-		>();
-
-	const seenAddresses = new Set<string>();
-	const distinctPages = pages.filter((page) => {
-		// A sign-up and a landing visit can capture the same page; it is planned from once.
-		if (signedInScreens === undefined) return true;
-		if (seenAddresses.has(page.url)) return false;
-		seenAddresses.add(page.url);
-		return true;
-	});
-	return distinctPages.map((page) => {
-		const own = elements
-			.filter((element) => String(element.screen.id) === String(page.id.id))
-			.sort(
-				(first, second) =>
-					INTERACTIVE_KINDS.indexOf(first.kind) - INTERACTIVE_KINDS.indexOf(second.kind)
-			)
-			.map((element) => `${element.kind}: ${element.name}`);
-		const opens = clicks
-			.filter((click) => String(click.screen.id) === String(page.id.id))
-			.map((click) => `opens something when clicked: ${click.label}`);
-		return {
-			id: String(page.id.id),
-			url: page.url,
-			path: page.path,
-			title: page.title,
-			pageType: page.page_type ?? '',
-			description: page.description ?? '',
-			image: page.image,
-			depth: page.depth,
-			interactiveParts: [...new Set([...own, ...opens])]
-		};
-	});
+/** What the browser agent is told to do: the goal, and how it can tell it is finished. */
+export function agentGoal(flow: Pick<PlannedFlow, 'goal' | 'success'>): string {
+	return flow.success === '' ? flow.goal : `${flow.goal} (done when: ${flow.success})`;
 }
 
-/** The main navigation labels the crawl recorded as it followed links in the header. */
-export async function loadNavLabels(db: Surreal, crawl: RecordId): Promise<string[]> {
-	const [labels] = await db
-		.query("SELECT VALUE label FROM action WHERE crawl = $crawl AND region = 'nav'", { crawl })
-		.collect<[string[]]>();
-	const cleaned = labels
-		.map((label) => label.replace(/\s+/g, ' ').trim())
-		.filter((label) => label !== '' && label.length <= MAX_NAV_LABEL_CHARACTERS);
-	return [...new Set(cleaned)].slice(0, MAX_NAV_LABELS);
+// --- reading the landing page -------------------------------------------------------------------
+
+/** What the model is told about the page besides its screenshot, which is cheap to read and says a lot. */
+export interface LandingPage {
+	url: string;
+	title: string;
+	description: string;
+	/** Links in the header and navigation, as "Label (/path)". */
+	navigation: string[];
+	/** Links in the footer, which list the site's areas more completely than the header does. */
+	footer: string[];
+	/** Links in the page body, which show what the page itself promotes. */
+	content: string[];
+	headings: string[];
 }
 
-/** Runs `work` over the items with at most `limit` in flight, and returns the results in item order. */
-export async function mapConcurrently<Item, Result>(
-	items: Item[],
-	limit: number,
-	work: (item: Item) => Promise<Result>
-): Promise<Result[]> {
-	const results: Result[] = new Array(items.length);
-	let nextIndex = 0;
-	async function worker(): Promise<void> {
-		while (nextIndex < items.length) {
-			const index = nextIndex++;
-			results[index] = await work(items[index]);
-		}
+/** Long lists only cost tokens; the first links of a region are its most important. */
+const MAX_NAVIGATION_LINKS = 50;
+const MAX_FOOTER_LINKS = 60;
+const MAX_CONTENT_LINKS = 30;
+const MAX_HEADINGS = 25;
+const MAX_HEADING_CHARACTERS = 100;
+const MAX_LINK_LABEL_CHARACTERS = 50;
+
+/** Reads the title, description, links and headings of the page the browser shows. */
+export async function readLandingPage(page: Page, siteHost: string): Promise<LandingPage> {
+	const details = await page.evaluate(() => window.pageInspector!.pageDetails());
+	const links = await page.evaluate(() => window.pageInspector!.links());
+	const headings = await page.locator('h1, h2, h3').allInnerTexts();
+
+	const linesByRegion = { nav: [], footer: [], main: [], other: [] } as Record<string, string[]>;
+	const seen = new Set<string>();
+	for (const link of links) {
+		const label = link.text.replace(/\s+/g, ' ').trim().slice(0, MAX_LINK_LABEL_CHARACTERS);
+		const destination = normalizeUrl(link.href);
+		// Off-site links lead somewhere the agent may not go; a link to the same page is no news.
+		if (label === '' || destination === undefined || !isSameSite(destination, siteHost)) continue;
+		const path = new URL(destination).pathname;
+		const line = `${label} (${path})`;
+		if (seen.has(line)) continue;
+		seen.add(line);
+		linesByRegion[link.region].push(line);
 	}
-	await Promise.all(Array.from({ length: Math.min(limit, items.length) }, worker));
-	return results;
+	return {
+		url: page.url(),
+		title: details.title,
+		description: details.description,
+		navigation: linesByRegion.nav.slice(0, MAX_NAVIGATION_LINKS),
+		footer: linesByRegion.footer.slice(0, MAX_FOOTER_LINKS),
+		content: [...linesByRegion.main, ...linesByRegion.other].slice(0, MAX_CONTENT_LINKS),
+		headings: headings
+			.map((heading) => heading.replace(/\s+/g, ' ').trim().slice(0, MAX_HEADING_CHARACTERS))
+			.filter((heading) => heading !== '')
+			.slice(0, MAX_HEADINGS)
+	};
 }
 
+// --- the plan ----------------------------------------------------------------------------------
+
 /**
- * Asks the model, page by page, what a visitor starting there could want to do. `account` says
- * the site has a demo account, which lets the model plan goals behind the login; `signedIn` says
- * the pages are the ones a logged-in user sees.
+ * Output tokens the plan may take. A plan is long (about 100 tokens per flow) and a server rejects
+ * a request whose prompt and output together exceed its context window, so this has to be set to
+ * what the model server allows: the default fits the local 16k window with room for the prompt,
+ * and a 32k RunPod worker can be given more with `REFS_PLAN_MAX_TOKENS`.
  */
-export async function planGoals(
-	ctx: CrawlContext,
-	pages: MappedPage[],
-	navLabels: string[],
-	concurrency: number,
-	options: { hasAccount: boolean; signedIn: boolean }
-): Promise<Omit<PlannedGoal, 'embedding'>[]> {
-	const siteMap = JSON.stringify(
-		pages.map((page) => ({ path: page.path, page_type: page.pageType, title: page.title }))
+const PLAN_MAX_TOKENS = Number(process.env.REFS_PLAN_MAX_TOKENS ?? 10_000);
+/**
+ * How long a hosted planner thinks before it writes the plan, from `REFS_PLAN_REASONING`. GLM-5.3
+ * Flash on medium listed 160 flows for GitHub where low listed 37 (bench/runs/github-com).
+ */
+const PLAN_REASONING = reasoningFromEnv('REFS_PLAN_REASONING', process.env.REFS_PLAN_REASONING);
+/** Typical size of one planned flow in tokens, to tell the model how many fit in the budget. */
+const TOKENS_PER_FLOW = 120;
+/** The area names, the product summary and the JSON around them. */
+const PLAN_OVERHEAD_TOKENS = 800;
+/**
+ * Upper bounds in the schema, not targets. A big product like Figma has dozens of areas and
+ * hundreds of flows; these only stop a runaway answer. The budget above is what usually binds.
+ */
+const MAX_AREAS = 40;
+const MAX_FLOWS_PER_AREA = 15;
+const MAX_GOAL_CHARACTERS = 160;
+const MAX_SUCCESS_CHARACTERS = 160;
+const MAX_START_CHARACTERS = 200;
+const MAX_NAME_CHARACTERS = 60;
+
+/**
+ * Categories left out of a plan, because something else covers them. With a demo account, the
+ * sign-up, the login and the onboarding are flows the crawler records itself, and planning them
+ * again only produced a second sign-up. Without one, nothing behind a login can be tried.
+ */
+function excludedCategories(hasAccount: boolean): FlowCategory[] {
+	return hasAccount
+		? ['signing_up', 'logging_in', 'onboarding']
+		: ['onboarding', 'logging_in', 'settings'];
+}
+
+export interface PlanRequest {
+	siteName: string;
+	siteUrl: string;
+	host: string;
+	viewport: 'desktop' | 'mobile';
+	/** The landing page screenshot. */
+	image: Buffer | Uint8Array;
+	page: LandingPage;
+	/** The site has a demo account the agent can log in with. */
+	hasAccount: boolean;
+	/** The page is the landing page of the signed-in account: plan what is behind the login. */
+	signedIn: boolean;
+}
+
+/** The longest an image the planner sees may be on a side; layout and headings stay readable. */
+const PLAN_IMAGE_MAX_SIDE = 1280;
+
+/**
+ * Asks the model for the flows worth recording on a site, from its landing page and its own
+ * knowledge of the product. The answer is nested by area, so the model first has to survey what the
+ * site consists of before it lists flows; that is what makes the list cover the whole site instead
+ * of the first few things that come to mind. The flows come back in the order to try them, which
+ * matters when a run is bounded: the first flow of every area, then the second of every area.
+ */
+export async function planFlows(request: PlanRequest): Promise<PlannedFlow[]> {
+	const { page, signedIn } = request;
+	const hasAccount = request.hasAccount || signedIn;
+	const excluded = excludedCategories(hasAccount);
+	const categories = FLOW_CATEGORIES.filter((category) => !excluded.includes(category));
+	const flowRoom = Math.floor((PLAN_MAX_TOKENS - PLAN_OVERHEAD_TOKENS) / TOKENS_PER_FLOW);
+
+	// Property order is decoding order: the model first says what the site is, then names its
+	// areas, then lists flows area by area. Each flow is worded first and judged after, because a
+	// small model breaks the "no payment" rule when it writes but answers a plain yes or no about
+	// the sentence it just wrote far more reliably.
+	const schema = {
+		type: 'object',
+		properties: {
+			product: {
+				type: 'string',
+				maxLength: 300,
+				description: 'What the site is and who uses it, in one or two sentences.'
+			},
+			areas: {
+				type: 'array',
+				minItems: 1,
+				maxItems: MAX_AREAS,
+				items: {
+					type: 'object',
+					properties: {
+						name: { type: 'string', maxLength: MAX_NAME_CHARACTERS },
+						flows: {
+							type: 'array',
+							minItems: 1,
+							maxItems: MAX_FLOWS_PER_AREA,
+							items: {
+								type: 'object',
+								properties: {
+									goal: { type: 'string', maxLength: MAX_GOAL_CHARACTERS },
+									category: { type: 'string', enum: categories },
+									start: {
+										type: 'string',
+										maxLength: MAX_START_CHARACTERS,
+										description: 'A path on the site that starts with a slash, like / or /pricing.'
+									},
+									needs_login: { type: 'boolean' },
+									needs_payment_or_private_data: { type: 'boolean' },
+									success: { type: 'string', maxLength: MAX_SUCCESS_CHARACTERS },
+									start_shows_success: {
+										type: 'boolean',
+										description:
+											'True when the start page itself already shows what success describes, before any action.'
+									}
+								},
+								required: [
+									'goal',
+									'category',
+									'start',
+									'needs_login',
+									'needs_payment_or_private_data',
+									'success',
+									'start_shows_success'
+								],
+								additionalProperties: false
+							}
+						}
+					},
+					required: ['name', 'flows'],
+					additionalProperties: false
+				}
+			}
+		},
+		required: ['product', 'areas'],
+		additionalProperties: false
+	};
+
+	const list = (lines: string[]) => (lines.length === 0 ? '(none found)' : lines.join('; '));
+	const categoryLines = categories
+		.map((category) => `- ${category}: ${FLOW_CATEGORY_DESCRIPTIONS[category]}`)
+		.join('\n');
+	const users = signedIn ? 'a signed-in user' : 'a visitor';
+	let accountRules: string;
+	if (signedIn) {
+		accountRules =
+			'- The screenshot is the site as a signed-in user sees it, so every flow needs the login: ' +
+			'set needs_login to true. Prefer flows that explore the product: open an area of the ' +
+			'navigation, switch a tab, open the profile or account menu or a settings page, search ' +
+			'or filter a list and open one item, open the thing the product is for (a file, a ' +
+			'project, a document, a dashboard) and use its main controls.\n' +
+			'- Never list signing up, logging in, signing in with Google or GitHub, paying, entering ' +
+			'a phone number, deleting anything, inviting other people or changing billing.\n';
+	} else if (hasAccount) {
+		accountRules =
+			'- The browser agent has a demo account for this site and can sign in with its email and ' +
+			'password. Flows behind the login are planned separately later, so list what a visitor ' +
+			'who is not signed in can do, and set needs_login to false.\n' +
+			'- Never list signing up or logging in themselves, signing in with Google or GitHub, ' +
+			'paying, entering a phone number, deleting anything, inviting other people or changing billing.\n';
+	} else {
+		accountRules =
+			'- The agent has no account, so it cannot log in: never list logging in, signing in with ' +
+			'Google or GitHub, or anything that needs an account. Starting to sign up or to request a ' +
+			"demo is fine when the flow ends where the form asks for personal data, like 'start the " +
+			"free trial and stop at the first field that asks for an email'.\n";
+	}
+	const prompt =
+		`You are planning what to capture from the website ${request.siteName} (${request.host}) ` +
+		'for a design reference library. A browser agent will later try each flow you list, on a ' +
+		`${request.viewport} screen, and the screens it passes through are saved for designers to ` +
+		`study. The screenshot shows ${signedIn ? 'the landing page of a signed-in user' : 'the landing page'}.\n\n` +
+		`Use the page AND everything you know about ${request.siteName} as a product. Most flows are ` +
+		'not visible on this page. You know that a shop has product pages, filters, a cart and a ' +
+		'checkout, that a design tool has a file browser, an editor with panels, comments and a ' +
+		'plugin library, and that a developer platform has docs, an API reference and a dashboard. ' +
+		'List those too, as long as the agent can reach them from this page by clicking.\n\n' +
+		`The page\nURL: ${page.url}\nTitle: ${page.title}\nDescription: ${page.description}\n` +
+		`Navigation: ${list(page.navigation)}\nFooter: ${list(page.footer)}\n` +
+		`Links in the page: ${list(page.content)}\nHeadings: ${list(page.headings)}\n\n` +
+		'How to answer\n' +
+		'1. product: what the site is and who uses it.\n' +
+		'2. areas: the distinct parts of the site and the product, such as the marketing pages, ' +
+		'pricing, the docs, a store, a help center, or the parts of an app. Name every part you know ' +
+		'of, not only the ones in the navigation.\n' +
+		`3. flows: for each area, what ${users} does there. A flow is one short run of steps that ` +
+		'gets something done, like comparing plans, filtering a product list and opening a result, ' +
+		'or reading a doc. Order them within the area by how typical they are for this site.\n\n' +
+		'How many is your call. A small site or a shop deserves about a dozen, a big product with ' +
+		`many features deserves many more. You have room for at most ${flowRoom} flows in total. ` +
+		'Do not pad the list: every flow must show something the others do not, and you stop when ' +
+		'you run out of distinct flows.\n\n' +
+		'For each flow:\n' +
+		"- goal: one sentence in the visitor's own words that names the concrete things on this " +
+		'site (a menu, a tab, a plan, a feature, a field), not a generic activity. Good, from ' +
+		"other sites: 'Filter the sneakers by size 9 and open the first result' and 'Switch " +
+		"the pricing toggle to yearly and compare the Team and Business plans'. Bad: 'Explore the " +
+		"features' and 'Learn about the product'.\n" +
+		`- category: what the flow is about. Allowed categories:\n${categoryLines}\n` +
+		'- start: the path where the agent starts, such as /pricing. Use / (the page above) unless ' +
+		'the flow can only start somewhere else and you are sure that page exists. The agent finds ' +
+		'its own way from there.\n' +
+		'- needs_login: true when the flow can only be done signed in to an account.\n' +
+		'- needs_payment_or_private_data: true when the flow cannot be done without payment ' +
+		'details, a phone number, a postal address or other real personal data.\n' +
+		'- success: what the screen shows once the goal is reached.\n\n' +
+		'Rules:\n' +
+		'- Prefer flows that take several steps over ones that follow a single link: open a menu ' +
+		'and pick an entry, switch a tab or a billing toggle, filter or search a list and open a ' +
+		'result, go through a multi-step form up to the point where it asks for personal data. A ' +
+		"flow that only opens one page, like 'open the pricing page', is allowed but comes last in " +
+		'its area.\n' +
+		'- A flow must need at least one action on its start page. Do not list something that page ' +
+		"already shows, like 'read the docs' when the flow starts in the docs, or 'explore the " +
+		"features' on a features page.\n" +
+		'- A flow that ends before the payment is valuable: put something in the cart and go to ' +
+		'the checkout, and stop at the form that asks for an address.\n' +
+		accountRules +
+		'- Only list what this kind of site really offers. Do not invent pages or features.\n';
+
+	const { uri } = await imageDataUri(request.image, PLAN_IMAGE_MAX_SIDE);
+	const answer = await chat(
+		models.vlm,
+		[
+			{
+				role: 'user',
+				content: [
+					{ type: 'image_url', image_url: { url: uri } },
+					{ type: 'text', text: prompt }
+				]
+			}
+		],
+		{ schema: { name: 'flow_plan', schema }, maxTokens: PLAN_MAX_TOKENS, reasoning: PLAN_REASONING }
 	);
-	const unplannedTypes = options.hasAccount
-		? ALWAYS_UNPLANNED_PAGE_TYPES
-		: [...ALWAYS_UNPLANNED_PAGE_TYPES, ...UNPLANNED_PAGE_TYPES_WITHOUT_ACCOUNT];
-	const plannedPages = pages.filter((page) => !unplannedTypes.includes(page.pageType));
-	const goalsPerPage = await mapConcurrently(plannedPages, concurrency, async (page) => {
-		await ctx.throwIfStopped();
-		const image = await ctx.media.get(page.image);
-		if (image === undefined) return [];
-		const form = new FormData();
-		form.set(
-			'image',
-			new Blob([image as Uint8Array<ArrayBuffer>], { type: 'image/webp' }),
-			'page.webp'
-		);
-		form.set('site_name', ctx.site.name);
-		form.set('host', ctx.site.host);
-		form.set('path', page.path);
-		form.set('page_type', page.pageType);
-		form.set('title', page.title);
-		form.set('description', page.description);
-		form.set('interactive_parts', JSON.stringify(page.interactiveParts));
-		form.set('site_pages', siteMap);
-		form.set('nav_labels', JSON.stringify(navLabels));
-		form.set('viewport', ctx.job.viewport);
-		form.set('max_goals', String(GOALS_PER_PAGE));
-		form.set('has_account', String(options.hasAccount));
-		form.set('signed_in', String(options.signedIn));
-		try {
-			const plan = await callModel<{
-				goals: {
-					goal: string;
-					category: string;
-					start_path: string;
-					success: string;
-					actions: number;
-					signed_in: boolean;
-				}[];
-			}>('/plan-goals', form);
-			return plan.goals.map((planned) => ({
-				goal: planned.goal,
-				category: planned.category,
-				startPath: planned.start_path,
-				success: planned.success,
-				actions: planned.actions,
-				signedIn: planned.signed_in
-			}));
-		} catch (error) {
-			// The model produced no usable plan for this page; the other pages still get theirs.
-			if (!(error instanceof ItemSkipped)) throw error;
-			console.warn(`  no goals for ${page.path}: ${error.message}`);
-			return [];
-		}
-	});
-	return goalsPerPage.flat();
-}
+	const plan = JSON.parse(answer) as {
+		product: string;
+		areas: {
+			name: string;
+			flows: {
+				goal: string;
+				category: FlowCategory;
+				start: string;
+				needs_login: boolean;
+				needs_payment_or_private_data: boolean;
+				success: string;
+				start_shows_success: boolean;
+			}[];
+		}[];
+	};
 
-// --- merging goals -----------------------------------------------------------------------------
-
-/**
- * What the embedder is told goals are for. With its default instruction every goal on one site
- * looked alike (0.7 to 0.9 cosine, whatever they asked for, because they all mention the site).
- * Asking it to find the goal that means the same thing separated ten hand-picked pairs: rewordings
- * of one goal scored 0.64 to 0.87, goals that differ 0.24 to 0.55.
- */
-const GOAL_EMBEDDING_INSTRUCTION =
-	'Given a goal on a website, find the goal that means the same thing.';
-
-/**
- * Two goals at least this similar (cosine) count as one. Chosen from the 66 goals planned for
- * linear.app: pairs from 0.78 up were almost all rewordings ("Compare the pricing plans" and
- * "Check the pricing page to compare different plans"), while between 0.7 and 0.78 rewordings and
- * different goals mix. Merging goals that differ loses coverage, while a repeated goal merely costs
- * a minute of browsing, so the threshold stays on the high side.
- */
-const DUPLICATE_GOAL_SIMILARITY = 0.78;
-
-/**
- * Looser than the duplicate threshold, for the run itself: a goal this similar to one that an
- * earlier trajectory reached from the same start page is already covered, and trying it again would
- * mostly repeat the same first steps. Only goals that start on the same page are compared, which is
- * why it can be lower.
- */
-export const COVERED_GOAL_SIMILARITY = 0.72;
-
-export function cosineSimilarity(first: number[], second: number[]): number {
-	// The embedding service returns unit vectors, so the dot product is the cosine.
-	let sum = 0;
-	for (let i = 0; i < first.length; i++) sum += first[i] * second[i];
-	return sum;
-}
-
-/**
- * Drops the goals that repeat an earlier one and orders the rest so that a run which hits its bound
- * has covered as many different things as possible.
- */
-export function selectDistinctGoals(goals: PlannedGoal[]): PlannedGoal[] {
-	// When two goals are the same, the one that takes more actions is the more instructive to watch.
-	const distinct: PlannedGoal[] = [];
-	for (const goal of [...goals].sort((first, second) => second.actions - first.actions)) {
-		const repeatsKept = distinct.some(
-			(kept) => cosineSimilarity(kept.embedding, goal.embedding) >= DUPLICATE_GOAL_SIMILARITY
-		);
-		if (!repeatsKept) distinct.push(goal);
-	}
-
-	// The next goal is the one whose category and start page are least represented among those
-	// picked so far; then the longer one, since a one-click goal only repeats the navigation the
-	// crawl captured; then the one least like anything picked already.
-	const ordered: PlannedGoal[] = [];
-	const remaining = [...distinct];
-	while (remaining.length > 0) {
-		const ranked = remaining
-			.map((goal) => ({
-				goal,
-				represented: ordered.filter(
-					(picked) => picked.category === goal.category || picked.startPath === goal.startPath
-				).length,
-				nearestPicked: Math.max(
-					-1,
-					...ordered.map((picked) => cosineSimilarity(picked.embedding, goal.embedding))
-				)
+	const seenGoals = new Set<string>();
+	const flowsByArea = plan.areas.map((area) =>
+		area.flows
+			.filter((flow) => !flow.needs_payment_or_private_data && (hasAccount || !flow.needs_login))
+			// The planner likes to start a flow where it ends, like "Open the pricing page" from
+			// /pricing (GLM-5.3 Flash did for half of GitHub's flows), and the agent is done before it
+			// does anything. Such a flow starts from the landing page instead, below, and one whose
+			// success the landing page itself already shows has nothing to record.
+			.filter(
+				(flow) =>
+					!flow.start_shows_success ||
+					resolveStart(flow.start, request.siteUrl, request.host) !== request.siteUrl
+			)
+			.filter((flow) => {
+				// The areas overlap, and the same flow listed twice would be recorded twice.
+				const key = flow.goal
+					.toLowerCase()
+					.replace(/[^a-z0-9]+/g, ' ')
+					.trim();
+				if (seenGoals.has(key)) return false;
+				seenGoals.add(key);
+				return true;
+			})
+			.map((flow) => ({
+				goal: flow.goal,
+				category: flow.category,
+				area: area.name,
+				startUrl: flow.start_shows_success
+					? request.siteUrl
+					: resolveStart(flow.start, request.siteUrl, request.host),
+				success: flow.success,
+				signedIn: signedIn || flow.needs_login
 			}))
-			.sort(
-				(first, second) =>
-					first.represented - second.represented ||
-					second.goal.actions - first.goal.actions ||
-					first.nearestPicked - second.nearestPicked
-			);
-		ordered.push(ranked[0].goal);
-		remaining.splice(remaining.indexOf(ranked[0].goal), 1);
+	);
+	const planned = interleave(flowsByArea);
+
+	// The planner answers the judgements above unevenly: once it marked every visitor flow of
+	// linear.app in a way that left none. Saying what was left out shows which one it was.
+	const answered = plan.areas.flatMap((area) => area.flows);
+	if (planned.length < answered.length) {
+		const count = (judged: (flow: (typeof answered)[number]) => boolean) =>
+			answered.filter(judged).length;
+		console.log(
+			`  the planner listed ${answered.length} flows and ${planned.length} are kept. Of the listed ones, ` +
+				`${count((flow) => flow.needs_payment_or_private_data)} need payment or personal data, ` +
+				`${count((flow) => !hasAccount && flow.needs_login)} need a login the agent does not have, and ` +
+				`${count((flow) => flow.start_shows_success && resolveStart(flow.start, request.siteUrl, request.host) === request.siteUrl)} ` +
+				'are already shown by the landing page. The rest are duplicates.'
+		);
+	}
+	return planned;
+}
+
+/**
+ * The URL a planned flow starts at. The model names a path it believes exists; anything that is
+ * not an address on the site itself falls back to the landing page.
+ */
+function resolveStart(start: string, siteUrl: string, host: string): string {
+	// Small models write the name of a page ("New arrivals") where a path belongs.
+	if (!/^(\/|https?:\/\/)\S*$/.test(start)) return siteUrl;
+	const resolved = normalizeUrl(start, siteUrl);
+	return resolved !== undefined && isSameSite(resolved, host) ? resolved : siteUrl;
+}
+
+/** The first flow of every list, then the second of every list, and so on. */
+export function interleave<Item>(lists: Item[][]): Item[] {
+	const longest = Math.max(0, ...lists.map((list) => list.length));
+	const ordered: Item[] = [];
+	for (let position = 0; position < longest; position++) {
+		for (const list of lists) {
+			if (position < list.length) ordered.push(list[position]);
+		}
 	}
 	return ordered;
-}
-
-/** Embeds the goals, so that `selectDistinctGoals` can tell which ones mean the same. */
-export async function mergeGoals(
-	goals: Omit<PlannedGoal, 'embedding'>[],
-	concurrency: number
-): Promise<PlannedGoal[]> {
-	const embedded = await mapConcurrently(goals, concurrency, async (goal) => {
-		const form = new FormData();
-		form.set('text', goal.goal);
-		form.set('instruction', GOAL_EMBEDDING_INSTRUCTION);
-		const { vector } = await callModel<{ vector: number[] }>('/embed', form);
-		return { ...goal, embedding: vector };
-	});
-	return selectDistinctGoals(embedded);
 }

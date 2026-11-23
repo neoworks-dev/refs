@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { untrack } from 'svelte';
 	import { goto } from '$app/navigation';
 	import { page } from '$app/state';
 	import { CornerDownLeft, LoaderCircle, Search, SearchX } from '@lucide/svelte';
@@ -28,6 +29,8 @@
 	let meaning = $state<SemanticResults>();
 	let loading = $state(false);
 	let meaningLoading = $state(false);
+	/** Set once the server says no embedding model is configured. */
+	let meaningOff = $state(false);
 	let failed = $state(false);
 	let activeIndex = $state(0);
 
@@ -116,12 +119,12 @@
 		};
 	});
 
-	// Then the matches by meaning, which need the model service and so arrive later than the
-	// name matches. When the service is down the endpoint answers with nothing and the section
-	// simply never shows.
+	// Then the matches by meaning, which need the embedding model and so arrive later than the
+	// name matches. When the model server is down the endpoint answers with nothing and the section
+	// simply never shows. When no model is configured it says so, and the palette stops asking.
 	$effect(() => {
 		const needle = query.trim();
-		if (needle === '') {
+		if (needle === '' || untrack(() => meaningOff)) {
 			meaning = undefined;
 			meaningLoading = false;
 			return;
@@ -135,6 +138,7 @@
 				});
 				if (!response.ok) throw new Error(`search by meaning failed with ${response.status}`);
 				meaning = await response.json();
+				meaningOff = meaning?.enabled === false;
 			} catch (error) {
 				// An aborted request means a newer query took over; anything else is a real failure,
 				// but the name matches are still useful, so only the meaning section goes away.
@@ -259,6 +263,7 @@
 					<h2 class="mt-4 text-[17px] font-medium">No results for “{query.trim()}”</h2>
 					<p class="mt-1.5 max-w-xs text-[15px] text-neutral-400">
 						Check the spelling, or try a shorter word like “pricing” or “button”.
+						{#if meaningOff}Search by meaning is off, so only names, titles and paths match.{/if}
 					</p>
 				</div>
 			{:else if results}

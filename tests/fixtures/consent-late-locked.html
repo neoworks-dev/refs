@@ -1,0 +1,28 @@
+<!doctype html>
+<title>Banner that shows up late and locks the page</title>
+<style>
+	body {
+		margin: 0;
+		font-family: sans-serif;
+	}
+	main {
+		height: 3000px;
+	}
+</style>
+<main><h1>Welcome</h1></main>
+<!-- Half a second after load, in a shadow root, with the iOS style scroll lock: position fixed on the body. -->
+<script>
+	setTimeout(() => {
+		const host = document.createElement('div');
+		host.id = 'consent-host';
+		host.attachShadow({ mode: 'open' }).innerHTML = `
+			<div style="position: fixed; left: 0; right: 0; bottom: 0; padding: 16px; background: white">
+				<p>This website uses cookies.</p>
+				<button>Learn more</button>
+			</div>`;
+		document.body.append(host);
+		document.body.style.position = 'fixed';
+		document.body.style.width = '100%';
+		document.body.style.overflow = 'hidden';
+	}, 500);
+</script>

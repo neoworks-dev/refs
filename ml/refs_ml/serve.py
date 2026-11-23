@@ -1,6 +1,8 @@
-"""Starts and stops the model servers and the API: `uv run serve [vlm|embeddings|api] [--profile NAME]`.
+"""Starts and stops the local model servers: `uv run serve [vlm|embeddings] [--profile NAME]`.
 
-With no server named, all of them start in order and stop together on Ctrl-C. Each server is
+They speak the OpenAI API, and the crawler and the app reach them directly (src/lib/server/models.ts).
+With no server named, only the VLM starts, because nothing uses embeddings for now. Named servers
+start in order and stop together on Ctrl-C. Each server is
 fully loaded before the next one starts, because vLLM sizes its memory pool from what is free at
 that moment, and two servers starting at once would both claim the same memory.
 
@@ -17,7 +19,6 @@ Profiles:
 """
 
 import argparse
-import os
 import shutil
 import signal
 import subprocess
@@ -28,14 +29,15 @@ from dataclasses import dataclass, field
 import httpx
 from huggingface_hub import hf_hub_download, snapshot_download
 
-from . import settings
-
 EMBEDDING_REPO = "Qwen/Qwen3-VL-Embedding-2B"
 VLM_PORT = 8020
 EMBEDDING_PORT = 8021
 GROUNDING_PORT = 8023
-# The name the separate grounding server advertises, which the API asks for.
+# The model names the servers advertise, which REFS_VLM_MODEL, REFS_GROUNDING_MODEL and
+# REFS_EMBEDDING_MODEL in .env have to match.
+VLM_MODEL_NAME = "vlm"
 GROUNDING_MODEL_NAME = "grounder"
+EMBEDDING_MODEL_NAME = "embedder"
 
 # Models take minutes to load from disk and compile kernels on first start.
 STARTUP_TIMEOUT_SECONDS = 900
@@ -163,7 +165,7 @@ def llama_cpp_command(model: LlamaCppModel) -> list[str]:
         llama_server,
         "--model", hf_hub_download(model.repo, model.model_file),
         "--mmproj", hf_hub_download(model.repo, model.projector_file),
-        "--alias", settings.VLM_MODEL,
+        "--alias", VLM_MODEL_NAME,
         "--host", "127.0.0.1",
         "--port", str(VLM_PORT),
         "--ctx-size", str(model.context_tokens),
@@ -196,7 +198,7 @@ def vllm_command(model: VllmModel, served_name: str, port: int) -> list[str]:
 def embedding_command(profile: Profile) -> list[str]:
     command = [
         sys.executable, "-m", "vllm.entrypoints.cli.main", "serve", EMBEDDING_REPO,
-        "--served-model-name", settings.EMBEDDING_MODEL,
+        "--served-model-name", EMBEDDING_MODEL_NAME,
         "--runner", "pooling",
         "--host", "127.0.0.1",
         "--port", str(EMBEDDING_PORT),
@@ -241,7 +243,7 @@ def download(profile: Profile) -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
-    parser.add_argument("servers", nargs="*", choices=["vlm", "embeddings", "api", "download"])
+    parser.add_argument("servers", nargs="*", choices=["vlm", "embeddings", "download"])
     parser.add_argument("--profile", default=DEFAULT_PROFILE, choices=list(PROFILES))
     arguments = parser.parse_args()
     profile = PROFILES[arguments.profile]
@@ -250,12 +252,6 @@ def main() -> None:
         download(profile)
         return
 
-    # The API reads where the grounding model lives from these, see settings.py.
-    api_environment = dict(os.environ)
-    if profile.grounder is not None:
-        api_environment["REFS_GROUNDING_URL"] = f"http://127.0.0.1:{GROUNDING_PORT}/v1"
-        api_environment["REFS_GROUNDING_MODEL"] = GROUNDING_MODEL_NAME
-
     # A background run (runpod/start.sh) is stopped with SIGTERM rather than Ctrl-C. Treat it
     # the same, so the servers are stopped too instead of being left holding the GPU.
     def stop_on_terminate(_signal_number: int, _frame: object) -> None:
@@ -263,31 +259,28 @@ def main() -> None:
 
     signal.signal(signal.SIGTERM, stop_on_terminate)
 
-    wanted = arguments.servers or ["vlm", "embeddings", "api"]
+    wanted = arguments.servers or ["vlm"]
     processes: list[subprocess.Popen] = []
     try:
         if "vlm" in wanted:
             if isinstance(profile.vlm, LlamaCppModel):
                 command = llama_cpp_command(profile.vlm)
             else:
-                command = vllm_command(profile.vlm, settings.VLM_MODEL, VLM_PORT)
+                command = vllm_command(profile.vlm, VLM_MODEL_NAME, VLM_PORT)
             processes.append(subprocess.Popen(command))
             wait_until_ready("VLM", VLM_PORT, processes[-1])
             if profile.grounder is not None:
                 command = vllm_command(profile.grounder, GROUNDING_MODEL_NAME, GROUNDING_PORT)
                 processes.append(subprocess.Popen(command))
                 wait_until_ready("Grounder", GROUNDING_PORT, processes[-1])
+                print(
+                    f"Set REFS_GROUNDING_URL=http://127.0.0.1:{GROUNDING_PORT}/v1 and "
+                    f"REFS_GROUNDING_MODEL={GROUNDING_MODEL_NAME} for the crawler to use it.",
+                    flush=True,
+                )
         if "embeddings" in wanted:
             processes.append(subprocess.Popen(embedding_command(profile)))
             wait_until_ready("Embedder", EMBEDDING_PORT, processes[-1])
-        if "api" in wanted:
-            processes.append(
-                subprocess.Popen(
-                    [sys.executable, "-m", "uvicorn", "refs_ml.api:app", "--host", "127.0.0.1",
-                     "--port", str(settings.API_PORT)],
-                    env=api_environment,
-                )  # fmt: skip
-            )
         # Block until one of them dies or the user interrupts.
         while all(process.poll() is None for process in processes):
             time.sleep(1)

@@ -4,6 +4,8 @@
 	import { page } from '$app/state';
 	import { Box } from '@lucide/svelte';
 	import CrawlStatus from '#lib/components/CrawlStatus.svelte';
+	import FlowRequestDialog from '#lib/components/FlowRequestDialog.svelte';
+	import FlowRequests from '#lib/components/FlowRequests.svelte';
 	import FilterChips from '#lib/components/FilterChips.svelte';
 	import ElementTile from '#lib/components/ElementTile.svelte';
 	import ScreenCard from '#lib/components/ScreenCard.svelte';
@@ -81,14 +83,22 @@
 		stepList.scrollTo({ left: card.offsetLeft - stepList.offsetLeft, behavior: 'smooth' });
 	});
 
+	// A request needs a crawl to run in, so only the viewports the site has been explored in count.
+	const requestableViewports = $derived(viewports.filter((viewport) => data.sources[viewport]));
+	let requestDialogOpen = $state(false);
+
 	const lastCrawled = $derived(
 		data.crawls.find((crawl) => crawl.status === 'done' && crawl.finished_at)?.finished_at
 	);
 
-	// Poll while a crawl is queued or running so the status strip and the grids fill in live, and
-	// while goals are being explored, which happens after the crawl is marked done.
+	// Poll while a crawl is queued or running so the status strip and the grids fill in live, while
+	// goals are being explored, which happens after the crawl is marked done, and while a requested
+	// flow waits for the worker or is being tried.
 	$effect(() => {
-		if (activeCrawls.length === 0 && data.liveGoals.length === 0) return;
+		const hasActiveRequest = data.flowRequests.some(
+			(request) => request.status === 'queued' || request.status === 'running'
+		);
+		if (activeCrawls.length === 0 && data.liveGoals.length === 0 && !hasActiveRequest) return;
 		const timer = setInterval(() => invalidate('app:site'), 2500);
 		return () => clearInterval(timer);
 	});
@@ -200,6 +210,15 @@
 				{activeCrawls.length > 0 ? 'Cancel crawl' : 'Recrawl'}
 			</button>
 		</form>
+		{#if requestableViewports.length > 0}
+			<button
+				type="button"
+				onclick={() => (requestDialogOpen = true)}
+				class="inline-flex h-11 items-center justify-center rounded-full border border-neutral-200 bg-white px-5 text-[15px] font-medium whitespace-nowrap transition-colors hover:bg-neutral-100 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-black dark:border-white/15 dark:bg-transparent dark:hover:bg-white/10 dark:focus-visible:outline-white"
+			>
+				Request a flow
+			</button>
+		{/if}
 		<a
 			href={data.site.url}
 			target="_blank"
@@ -212,6 +231,8 @@
 
 	<CrawlStatus crawls={data.crawls} />
 </section>
+
+<FlowRequests requests={data.flowRequests} siteSlug={data.site.slug} />
 
 {#if data.liveGoals.length > 0}
 	<section class="mt-10" aria-label="Live exploration">
@@ -397,6 +418,16 @@
 	{/if}
 </div>
 
+{#if requestDialogOpen}
+	<FlowRequestDialog
+		viewports={requestableViewports}
+		initialViewport={requestableViewports.includes(data.viewport)
+			? data.viewport
+			: requestableViewports[0]}
+		onclose={() => (requestDialogOpen = false)}
+	/>
+{/if}
+
 {#if data.viewer}
 	<ScreenViewer
 		detail={data.viewer}
@@ -444,6 +475,13 @@
 								>
 									<span class="min-w-0">
 										{candidate.title || 'Untitled flow'}
+										{#if candidate.source === 'request'}
+											<span
+												class="ml-1 rounded-full bg-neutral-100 px-2 py-0.5 text-[12px] font-medium text-neutral-600 dark:bg-white/10 dark:text-neutral-300"
+											>
+												Requested
+											</span>
+										{/if}
 										{#if candidate.signed_in}
 											<span
 												class="ml-1 rounded-full bg-neutral-100 px-2 py-0.5 text-[12px] font-medium text-neutral-600 dark:bg-white/10 dark:text-neutral-300"
@@ -477,7 +515,8 @@
 					<optgroup label={group.category ? humanise(group.category) : 'Uncategorised'}>
 						{#each group.flows as candidate (candidate.id)}
 							<option value={candidate.id}>
-								{candidate.title || 'Untitled flow'} ({candidate.steps.length})
+								{candidate.title || 'Untitled flow'}
+								{candidate.source === 'request' ? '· requested ' : ''}({candidate.steps.length})
 							</option>
 						{/each}
 					</optgroup>
@@ -492,6 +531,14 @@
 					<p class="mt-1 text-[16px] text-neutral-500 dark:text-neutral-400">
 						{flow.category ? `${humanise(flow.category)} · ` : ''}{data.flowSteps.length}
 						{data.flowSteps.length === 1 ? 'screen' : 'screens'}
+						{#if flow.source === 'request'}
+							<!-- Asked for by a person rather than planned by the model; the goal is their own words. -->
+							<span
+								class="ml-1 rounded-full bg-neutral-100 px-2 py-0.5 text-[12px] font-medium text-neutral-600 dark:bg-white/10 dark:text-neutral-300"
+							>
+								Requested
+							</span>
+						{/if}
 						{#if flow.signed_in}
 							<!-- Run logged in to the site's demo account, so it shows what a signed-in user sees. -->
 							<span
@@ -501,6 +548,11 @@
 							</span>
 						{/if}
 					</p>
+					{#if flow.source === 'request' && flow.goal}
+						<p class="mt-2 max-w-2xl text-[16px] text-neutral-500 dark:text-neutral-400">
+							“{flow.goal}”
+						</p>
+					{/if}
 				</div>
 				<SaveButton table="flow" id={flow.id} label={flow.title || 'flow'} variant="pill" />
 			</div>
@@ -619,9 +671,10 @@
 		<p class="mt-2 max-w-sm text-[17px] text-balance text-neutral-500 dark:text-neutral-400">
 			{#if what === 'flows'}
 				{#if activeCrawls.length > 0}
-					They show up here once the crawl has finished.
+					They show up here as exploration captures them.
 				{:else}
-					No flows were found on the {data.viewport} viewport.
+					No flows were captured on the {data.viewport} viewport.{#if requestableViewports.length > 0}
+						Use “Request a flow” to ask for one.{/if}
 				{/if}
 			{:else if filtered}
 				No {what} of this kind on the {data.viewport} viewport. Pick another chip, or All.

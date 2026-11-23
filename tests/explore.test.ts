@@ -1,59 +1,43 @@
-// What goal-directed exploration decides without a browser: which goals are worth running and in
-// what order, and which actions it refuses to carry out.
+// What goal-directed exploration decides without a browser: in what order planned flows run, and
+// which actions it refuses to carry out.
 import { describe, expect, test } from 'bun:test';
 import { refusalReason } from '../crawler/agent.ts';
-import { selectDistinctGoals, type PlannedGoal } from '../crawler/goals.ts';
+import { agentGoal, interleave } from '../crawler/goals.ts';
 
 const rect = { x: 0, y: 0, w: 10, h: 10 };
 
-/** A goal whose embedding is a unit vector pointing at `angle` degrees, so cosines are easy to read. */
-function goal(
-	text: string,
-	options: { angle: number; category?: string; startPath?: string; actions?: number }
-): PlannedGoal {
-	const radians = (options.angle * Math.PI) / 180;
-	return {
-		goal: text,
-		category: options.category ?? 'other',
-		startPath: options.startPath ?? '/',
-		success: '',
-		actions: options.actions ?? 2,
-		signedIn: false,
-		embedding: [Math.cos(radians), Math.sin(radians)]
-	};
-}
-
-describe('choosing goals', () => {
-	test('a reworded goal is dropped, and the longer of the two is kept', () => {
-		const short = goal('Open pricing', { angle: 0, actions: 1 });
-		const long = goal('Compare the plans on the pricing page', { angle: 10, actions: 3 });
-
-		const chosen = selectDistinctGoals([short, long]);
-
-		expect(chosen.map((kept) => kept.goal)).toEqual([long.goal]);
-	});
-
-	test('goals that differ all stay', () => {
-		const chosen = selectDistinctGoals([
-			goal('Compare plans', { angle: 0 }),
-			goal('Search the docs', { angle: 90 })
+describe('ordering planned flows', () => {
+	test('the first flow of every area comes before the second flow of any area', () => {
+		const ordered = interleave([
+			['pricing 1', 'pricing 2', 'pricing 3'],
+			['docs 1'],
+			['store 1', 'store 2']
 		]);
 
-		expect(chosen).toHaveLength(2);
+		expect(ordered).toEqual([
+			'pricing 1',
+			'docs 1',
+			'store 1',
+			'pricing 2',
+			'store 2',
+			'pricing 3'
+		]);
 	});
 
-	test('the order spreads over categories and start pages before going deep on one', () => {
-		const chosen = selectDistinctGoals([
-			goal('Pricing one', { angle: 0, category: 'pricing_and_plans', startPath: '/pricing' }),
-			goal('Pricing two', { angle: 60, category: 'pricing_and_plans', startPath: '/pricing' }),
-			goal('Pricing three', { angle: 120, category: 'pricing_and_plans', startPath: '/pricing' }),
-			goal('Read the docs', { angle: 180, category: 'reading_content', startPath: '/docs' }),
-			goal('Contact sales', { angle: 240, category: 'contacting', startPath: '/enterprise' })
-		]);
+	test('no areas leave nothing to try', () => {
+		expect(interleave([])).toEqual([]);
+	});
+});
 
-		const firstThree = chosen.slice(0, 3).map((kept) => kept.category);
+describe('the goal the agent works on', () => {
+	test('names the success criterion, so the agent knows when to stop', () => {
+		expect(agentGoal({ goal: 'Compare the plans', success: 'A table of plans is shown' })).toBe(
+			'Compare the plans (done when: A table of plans is shown)'
+		);
+	});
 
-		expect(new Set(firstThree).size).toBe(3);
+	test('a goal without a criterion is left as it is', () => {
+		expect(agentGoal({ goal: 'Compare the plans', success: '' })).toBe('Compare the plans');
 	});
 });
 

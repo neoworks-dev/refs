@@ -1,7 +1,9 @@
 // One goal tried in a browser: screenshot, ask the model for the next action, carry it out, capture
 // the screen it leads to, until the goal is reached or the run ends some other way. Used by
-// exploration (explore.ts) for every goal, and for signing up and logging in to the demo account.
+// exploration (explore.ts) for every planned flow, for flows people request (requests.ts), and for
+// signing up and logging in to the demo account.
 import type { Browser, Page } from 'playwright';
+import type { Surreal } from 'surrealdb';
 import { RecordId } from '#lib/server/surreal.ts';
 import type { Account } from '#lib/types.ts';
 import type { FlowOutcome, FlowVideo, Rect } from '#lib/types.ts';
@@ -13,6 +15,7 @@ import {
 	refusalReason,
 	resolveTarget,
 	settle,
+	watchNavigations,
 	type AgentAction,
 	type AgentIdentity,
 	type HistoryEntry
@@ -30,13 +33,18 @@ import {
 	stabilizeLoadedPage,
 	viewportScreenshot
 } from './capture.ts';
-import { SAME_STATE_HASH_DISTANCE, STATE_HASH_DISTANCE, type CrawlContext } from './crawl.ts';
-import type { PlannedGoal, MappedPage } from './goals.ts';
+import type { CrawlContext } from './crawl.ts';
+import type { PlannedFlow } from './goals.ts';
 import { endLiveGoal, reportLiveGoal } from './live.ts';
 import { waitForVerificationMail } from './mail.ts';
 import type { ProbedControl } from './page.ts';
 import { startRecording } from './recording.ts';
 import { displayPath, isSameSite, normalizeUrl, urlKey } from './rules.ts';
+
+/** Viewport images whose dHash differs by at least this many bits count as a visual change. */
+const STATE_HASH_DISTANCE = 6;
+/** Two states of the same page closer than this are the same state reached twice. */
+const SAME_STATE_HASH_DISTANCE = 3;
 
 export interface KnownScreen {
 	id: string;
@@ -58,8 +66,49 @@ export interface KnownScreen {
 export class ScreenIndex {
 	constructor(private readonly screens: KnownScreen[]) {}
 
+	/** The index of a crawl that already has screens, such as the one a flow request runs in. */
+	static async load(db: Surreal, crawl: RecordId): Promise<ScreenIndex> {
+		const [rows] = await db
+			.query(
+				'SELECT id, url, image_hash, dom_sig, depth, kind, signed_in FROM screen WHERE crawl = $crawl',
+				{ crawl }
+			)
+			.collect<
+				[
+					{
+						id: RecordId;
+						url: string;
+						image_hash: string;
+						dom_sig: string;
+						depth: number;
+						kind: 'page' | 'state';
+						signed_in?: boolean;
+					}[]
+				]
+			>();
+		return new ScreenIndex(
+			rows.map((row) => ({
+				id: String(row.id.id),
+				url: row.url,
+				imageHash: row.image_hash,
+				domSig: row.dom_sig,
+				depth: row.depth,
+				kind: row.kind,
+				signedIn: row.signed_in === true
+			}))
+		);
+	}
+
 	get(id: string): KnownScreen {
 		return this.screens.find((screen) => screen.id === id)!;
+	}
+
+	/** The stored page screen of an address as seen in a login state, if the crawl has captured it. */
+	pageAt(url: string, signedIn: boolean): KnownScreen | undefined {
+		return this.screens.find(
+			(known) =>
+				known.kind === 'page' && known.signedIn === signedIn && urlKey(known.url) === urlKey(url)
+		);
 	}
 
 	/**
@@ -163,7 +212,7 @@ export class ScreenIndex {
 // --- one trajectory ----------------------------------------------------------------------------
 
 /**
- * Past 15 steps the model is wandering: in the closed-loop evaluation in ml/eval, goals that were
+ * Past 15 steps the model is wandering: in the closed-loop evaluation that lived in ml/eval, goals that were
  * reached took 2 to 12 steps in all but two long docs searches, and a step costs about 5 s here.
  */
 const MAX_STEPS_PER_GOAL = 15;
@@ -205,8 +254,9 @@ export interface Trajectory {
 }
 
 export interface TrajectoryRequest {
-	goal: PlannedGoal;
-	startPage: MappedPage;
+	flow: Pick<PlannedFlow, 'goal' | 'success'>;
+	/** Where the browser starts. */
+	startUrl: string;
 	flowId: string;
 	goalNumber: number;
 	/** The worker running this goal, which tells goals running at the same time apart in the live panel. */
@@ -231,6 +281,9 @@ export interface TrajectoryRequest {
  */
 const VERDICT_OUTCOMES: FlowOutcome[] = ['gave_up', 'blocked'];
 
+/** The start page of a run does not load, or sends the browser off the site. */
+export class StartPageUnavailable extends Error {}
+
 /** Runs one goal in a fresh browser context, from its start page until it ends one way or another. */
 export async function runTrajectory(
 	browser: Browser,
@@ -238,13 +291,14 @@ export async function runTrajectory(
 	screenIndex: ScreenIndex,
 	request: TrajectoryRequest
 ): Promise<Trajectory> {
-	const { goal, startPage, account } = request;
+	const { flow, account } = request;
 	let identity: AgentIdentity | undefined = account && identityOf(account);
 	const { context } = await openContext(browser, ctx.job.viewport, {
 		storageState: request.startSignedIn ? account?.storage_state : undefined
 	});
 	try {
 		const page = await context.newPage();
+		const navigations = watchNavigations(page);
 		// Pop-ups (target=_blank links, OAuth windows) are never wanted; native dialogs would block the page.
 		context.on('page', (popup) => {
 			if (popup !== page) void popup.close();
@@ -265,10 +319,28 @@ export async function runTrajectory(
 			return route.fallback();
 		});
 
-		await loadPage(page, startPage.url, { waitForBanner: true });
+		const response = await loadPage(page, request.startUrl, { waitForBanner: true });
+		const arrivedAt = normalizeUrl(page.url());
+		if (response !== null && response.status() >= 400) {
+			throw new StartPageUnavailable(`${request.startUrl} answered HTTP ${response.status()}`);
+		}
+		if (arrivedAt === undefined || !isSameSite(arrivedAt, ctx.site.host)) {
+			throw new StartPageUnavailable(
+				`${request.startUrl} leads away from the site, to ${page.url()}`
+			);
+		}
+
+		// Whether the browser is logged in. A saved login that expired shows the login again, so it is
+		// checked. Otherwise the run becomes logged in when the model types the password and the
+		// page then stops looking like a login or sign-up page.
+		let signedIn = request.startSignedIn && (await looksSignedIn(page));
+		let typedPassword = false;
+		// The first step is the stored screen of the start page, whatever animation its hero is in
+		// now, and a new page is captured before the recording starts because capturing scrolls it.
+		let current =
+			screenIndex.pageAt(arrivedAt, signedIn) ??
+			(await screenIndex.observe(ctx, page, undefined, '', signedIn));
 		const recording = await startRecording(page, ctx.job.viewport);
-		// The first step is the page the goal was planned from, whatever animation the hero is in.
-		let current = screenIndex.get(startPage.id);
 		recording.markStep();
 
 		const steps: TrajectoryStep[] = [{ screen: current.id }];
@@ -276,11 +348,6 @@ export async function runTrajectory(
 		const visits = new Map<string, number>([[current.id, 1]]);
 		let unchangedSteps = 0;
 
-		// Whether the browser is logged in. A saved login that expired shows the login again, so it is
-		// checked. Otherwise the run becomes logged in when the model types the password and the
-		// page then stops looking like a login or sign-up page.
-		let signedIn = request.startSignedIn && (await looksSignedIn(page));
-		let typedPassword = false;
 		const signedInScreens: string[] = signedIn ? [current.id] : [];
 		/** Shows the goal and the page as they are now in the live panel. */
 		const showLive = (step: number, thought?: string, action?: string) =>
@@ -289,7 +356,7 @@ export async function runTrajectory(
 				site: ctx.job.site,
 				viewport: ctx.job.viewport,
 				slot: request.slot,
-				goal: goal.goal,
+				goal: flow.goal,
 				step,
 				thought,
 				action,
@@ -371,7 +438,8 @@ export async function runTrajectory(
 			}
 
 			const startedAt = performance.now();
-			const action = forcedAction ?? (await decideNextAction(goal.goal, page, history, identity));
+			const action =
+				forcedAction ?? (await decideNextAction(flow, page, history, identity));
 			forcedAction = undefined;
 			const decidedIn = ((performance.now() - startedAt) / 1000).toFixed(1);
 			console.log(
@@ -404,7 +472,7 @@ export async function runTrajectory(
 			const textBefore = await page.evaluate(() => document.body.innerText);
 			const refusal = await carryOut(page, action, recording, identity);
 			if (refusal !== undefined) return await ended('blocked', refusal);
-			await settle(page);
+			await settle(page, navigations);
 
 			const destination = normalizeUrl(page.url());
 			if (destination === undefined || !isSameSite(destination, ctx.site.host)) {
@@ -424,8 +492,8 @@ export async function runTrajectory(
 			const hashAfter = await dHash(await viewportScreenshot(page));
 			const viewChanged = hammingDistance(hashBefore, hashAfter) >= SMALL_VIEW_CHANGE;
 
-			// Scrolling and waiting do not change what the page is, unless a redirect moved it.
-			const mayHaveChangedScreen = urlChanged || aimsAtPoint;
+			// Scrolling and waiting do not change what the page is, unless a redirect moved it. Enter submits.
+			const mayHaveChangedScreen = urlChanged || aimsAtPoint || action.action === 'press_enter';
 			const reached = mayHaveChangedScreen
 				? await screenIndex.observe(ctx, page, current, textBefore, signedIn)
 				: current;

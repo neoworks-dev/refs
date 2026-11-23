@@ -17,9 +17,10 @@
 		"crawl": "bun crawler/cli.ts",
 		"enrich": "bun crawler/enrich.ts",
 		"api-key": "bun scripts/api-key.ts",
-		"explore": "bun crawler/explore.ts",
-		"flows": "bun crawler/flows.ts",
-		"videos": "bun crawler/videos.ts"
+		"request": "bun crawler/cli.ts request",
+		"login": "bun crawler/cli.ts login",
+		"videos": "bun crawler/videos.ts",
+		"bench:plan": "bun bench/plan.ts"
 	},
 	"devDependencies": {
 		"@sveltejs/adapter-node": "^6.0.0",

@@ -5,6 +5,7 @@ import type {
 	Crawl,
 	ElementKind,
 	Flow,
+	FlowRequest,
 	LiveGoal,
 	Rect,
 	Screen,
@@ -15,6 +16,7 @@ import type {
 } from '../types.ts';
 import { FLOW_CATEGORIES, VIEWPORTS } from '../types.ts';
 import { db } from './db.ts';
+import { embed, modelConfigFromEnv, type ModelEndpoint } from './models.ts';
 import {
 	elementConditions,
 	rows as queryRows,
@@ -29,9 +31,6 @@ async function rows<Row>(sql: string, variables: Record<string, unknown> = {}): 
 }
 
 const ACTIVE_STATUSES = ['queued', 'running'];
-const DEFAULT_MAX_SCREENS = 30;
-// Same link depth the crawler CLI uses when it creates crawls itself.
-const DEFAULT_MAX_DEPTH = 3;
 
 // ---------------------------------------------------------------------------------------------
 // Adding sites and queueing crawls
@@ -40,7 +39,6 @@ const DEFAULT_MAX_DEPTH = 3;
 export interface AddSiteInput {
 	url: NormalisedUrl;
 	viewports: Viewport[];
-	maxScreens: number;
 }
 
 /** Creates the site if its host is new, then queues one crawl per requested viewport. */
@@ -62,7 +60,7 @@ export async function addSite(input: AddSiteInput): Promise<{ slug: string }> {
 	}
 
 	const siteSlug = slug as string;
-	await queueCrawls(siteSlug, input.viewports, input.maxScreens);
+	await queueCrawls(siteSlug, input.viewports);
 	return { slug: siteSlug };
 }
 
@@ -70,7 +68,7 @@ export async function addSite(input: AddSiteInput): Promise<{ slug: string }> {
  * Queues one crawl per viewport. A viewport that already has a queued or running crawl is
  * skipped so that double submits do not crawl the same site twice in parallel.
  */
-async function queueCrawls(slug: string, viewports: Viewport[], maxScreens: number): Promise<void> {
+async function queueCrawls(slug: string, viewports: Viewport[]): Promise<void> {
 	const site = new RecordId('site', slug);
 	const active = await rows<{ viewport: Viewport }>(
 		'SELECT viewport FROM crawl WHERE site = $site AND status IN $active',
@@ -80,23 +78,33 @@ async function queueCrawls(slug: string, viewports: Viewport[], maxScreens: numb
 
 	for (const viewport of viewports) {
 		if (busy.has(viewport)) continue;
-		await rows(
-			`CREATE crawl CONTENT {
-				site: $site, viewport: $viewport, status: 'queued',
-				max_screens: $maxScreens, max_depth: $maxDepth
-			}`,
-			{ site, viewport, maxScreens, maxDepth: DEFAULT_MAX_DEPTH }
-		);
+		// The ceiling of flows per run is the schema's default.
+		await rows("CREATE crawl CONTENT { site: $site, viewport: $viewport, status: 'queued' }", {
+			site,
+			viewport
+		});
 	}
 }
 
-/** Queues new crawls for both viewports, reusing the page budget of the previous crawl. */
+/** Queues new crawls for both viewports. */
 export async function recrawl(slug: string): Promise<void> {
-	const previous = await rows<{ max_screens: number }>(
-		'SELECT max_screens FROM crawl WHERE site = $site ORDER BY created_at DESC LIMIT 1',
-		{ site: new RecordId('site', slug) }
-	);
-	await queueCrawls(slug, VIEWPORTS, previous[0]?.max_screens ?? DEFAULT_MAX_SCREENS);
+	await queueCrawls(slug, VIEWPORTS);
+}
+
+/**
+ * Queues a flow the person asked for. The worker picks it up between crawls and runs it in the
+ * site's current crawl for the viewport.
+ */
+export async function createFlowRequest(
+	slug: string,
+	viewport: Viewport,
+	goal: string
+): Promise<void> {
+	await rows('CREATE flow_request CONTENT { site: $site, viewport: $viewport, goal: $goal }', {
+		site: new RecordId('site', slug),
+		viewport,
+		goal
+	});
 }
 
 /** Marks every queued or running crawl of the site as cancelled; the worker stops on its own. */
@@ -302,13 +310,12 @@ export interface SemanticSectionHit {
 }
 
 export interface SemanticResults {
+	/** False while no embedding model is configured, which turns search by meaning off. */
+	enabled: boolean;
 	screens: SemanticScreenHit[];
 	sections: SemanticSectionHit[];
 }
 
-const MODEL_SERVICE_URL = env.REFS_ML_URL ?? 'http://127.0.0.1:8022';
-// Must match the dimension of the HNSW indexes in db/schema.surql.
-const EMBEDDING_DIMENSIONS = 1024;
 const SEMANTIC_LIMIT = 8;
 // How many neighbours the index returns before the current-crawl filter runs. The index also
 // holds superseded crawls, so asking for only SEMANTIC_LIMIT could leave fewer after filtering.
@@ -318,37 +325,34 @@ const NEIGHBOURS = 50;
 const SEARCH_EFFORT = 100;
 
 /**
- * Turns the query into a vector with the model service. Returns undefined when the service is
- * not running, so the palette can carry on with the name matches alone.
+ * Turns the query into a vector with the embedding model. Returns undefined when the model server
+ * is not running, so the palette can carry on with the name matches alone.
  */
-async function embedQuery(text: string): Promise<number[] | undefined> {
-	const form = new FormData();
-	form.set('text', text);
-	form.set('dimensions', String(EMBEDDING_DIMENSIONS));
-	let response: Response;
+async function embedQuery(embedder: ModelEndpoint, text: string): Promise<number[] | undefined> {
 	try {
-		response = await fetch(`${MODEL_SERVICE_URL}/embed`, { method: 'POST', body: form });
+		return await embed(embedder, { text });
 	} catch (error) {
-		// fetch rejects with a bare TypeError; a refused connection (nothing listening on the port)
-		// is the one failure that means "the service is not running" and is expected.
+		// `embed` wraps a fetch that got no response in a plain Error, keeping the bare TypeError
+		// as its cause; a refused connection (nothing listening on the port) is the one failure
+		// that means "the server is not running" and is expected.
+		const fetchError = error instanceof Error ? error.cause : undefined;
 		const cause =
-			error instanceof TypeError ? (error.cause as { code?: string } | undefined) : undefined;
+			fetchError instanceof TypeError ? (fetchError.cause as { code?: string }) : undefined;
 		if (cause?.code === 'ECONNREFUSED') return undefined;
 		throw error;
 	}
-	if (!response.ok) throw new Error(`embedding failed with ${response.status}`);
-	const { vector } = (await response.json()) as { vector: number[] };
-	return vector;
 }
 
 /**
  * Screens and sections whose picture is closest to the meaning of the query. Empty when the
- * model service is down.
+ * model server is down, and `enabled: false` when no embedding model is configured.
  */
 export async function searchByMeaning(search: string): Promise<SemanticResults> {
+	const embedder = modelConfigFromEnv(env).embedding;
+	if (embedder === undefined) return { enabled: false, screens: [], sections: [] };
 	const text = search.trim();
-	const vector = text === '' ? undefined : await embedQuery(text);
-	if (vector === undefined) return { screens: [], sections: [] };
+	const vector = text === '' ? undefined : await embedQuery(embedder, text);
+	if (vector === undefined) return { enabled: true, screens: [], sections: [] };
 	const crawls = (await sourceCrawls(await db())).map((crawl) => new RecordId('crawl', crawl.id));
 
 	// The WHERE next to the KNN operator would apply after the top k, so the subquery oversamples
@@ -389,6 +393,7 @@ export async function searchByMeaning(search: string): Promise<SemanticResults> 
 	const screenById = new Map(screenDetails.map((screen) => [screen.id, screen]));
 	const sectionById = new Map(sectionDetails.map((section) => [section.id, section]));
 	return {
+		enabled: true,
 		screens: screenMatches.flatMap((match) => screenById.get(match.id) ?? []),
 		sections: sectionMatches.flatMap((match) => sectionById.get(match.id) ?? [])
 	};
@@ -412,6 +417,8 @@ export interface SiteOverview {
 	kindCounts: Record<Viewport, Partial<Record<ElementKind, number>>>;
 	/** The goals exploration is trying right now, by viewport and then worker. */
 	liveGoals: LiveGoal[];
+	/** The flows people asked for, newest first. */
+	flowRequests: FlowRequest[];
 }
 
 /**
@@ -420,34 +427,42 @@ export interface SiteOverview {
  */
 const LIVE_GOAL_MAX_AGE = '2m';
 
+/** Requests listed on a site's page; older ones stay in the database and their flows stay in the tree. */
+const FLOW_REQUESTS_SHOWN = 10;
+
 export async function getSiteOverview(slug: string): Promise<SiteOverview | undefined> {
 	const [site] = await rows<Site>('SELECT * FROM site WHERE slug = $slug LIMIT 1', { slug });
 	if (!site) return undefined;
 	const siteRecord = new RecordId('site', site.id);
 
-	const [crawls, screenGroups, flowGroups, liveGoals, currentCrawls] = await Promise.all([
-		rows<Crawl>('SELECT * FROM crawl WHERE site = $site ORDER BY created_at DESC LIMIT 20', {
-			site: siteRecord
-		}),
-		// Counted from the screen table rather than `crawl.screens` so it is right even while the
-		// crawler's counters lag behind.
-		rows<{ crawl: string; count: number }>(
-			'SELECT crawl, count() AS count FROM screen WHERE site = $site GROUP BY crawl',
-			{ site: siteRecord }
-		),
-		rows<{ crawl: string; count: number }>(
-			'SELECT crawl, count() AS count FROM flow WHERE site = $site GROUP BY crawl',
-			{ site: siteRecord }
-		),
-		// The screenshot is left out: it is large and the panel fetches it as an image.
-		rows<LiveGoal>(
-			`SELECT * OMIT screenshot FROM live_goal
+	const [crawls, screenGroups, flowGroups, liveGoals, flowRequests, currentCrawls] =
+		await Promise.all([
+			rows<Crawl>('SELECT * FROM crawl WHERE site = $site ORDER BY created_at DESC LIMIT 20', {
+				site: siteRecord
+			}),
+			// Counted from the screen table rather than `crawl.screens` so it is right even while the
+			// crawler's counters lag behind.
+			rows<{ crawl: string; count: number }>(
+				'SELECT crawl, count() AS count FROM screen WHERE site = $site GROUP BY crawl',
+				{ site: siteRecord }
+			),
+			rows<{ crawl: string; count: number }>(
+				'SELECT crawl, count() AS count FROM flow WHERE site = $site GROUP BY crawl',
+				{ site: siteRecord }
+			),
+			// The screenshot is left out: it is large and the panel fetches it as an image.
+			rows<LiveGoal>(
+				`SELECT * OMIT screenshot FROM live_goal
 			 WHERE site = $site AND updated_at > time::now() - <duration> $maxAge
 			 ORDER BY viewport, slot`,
-			{ site: siteRecord, maxAge: LIVE_GOAL_MAX_AGE }
-		),
-		db().then((database) => sourceCrawls(database, site.id))
-	]);
+				{ site: siteRecord, maxAge: LIVE_GOAL_MAX_AGE }
+			),
+			rows<FlowRequest>(
+				'SELECT * FROM flow_request WHERE site = $site ORDER BY created_at DESC LIMIT $limit',
+				{ site: siteRecord, limit: FLOW_REQUESTS_SHOWN }
+			),
+			db().then((database) => sourceCrawls(database, site.id))
+		]);
 
 	const screensByCrawl = new Map(screenGroups.map((group) => [group.crawl, group.count]));
 	const flowsByCrawl = new Map(flowGroups.map((group) => [group.crawl, group.count]));
@@ -474,7 +489,7 @@ export async function getSiteOverview(slug: string): Promise<SiteOverview | unde
 		})
 	);
 
-	return { site, crawls, sources, screenCounts, flowCounts, kindCounts, liveGoals };
+	return { site, crawls, sources, screenCounts, flowCounts, kindCounts, liveGoals, flowRequests };
 }
 
 /** The JPEG of a live goal's browser after its last step, or undefined once the goal has ended. */

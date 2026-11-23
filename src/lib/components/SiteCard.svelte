@@ -31,7 +31,7 @@
 						site.activeStatus === 'queued' && 'bg-amber-500'
 					]}
 				></span>
-				{site.activeStatus === 'running' ? 'Crawling' : 'Queued'}
+				{site.activeStatus === 'running' ? 'Exploring' : 'Queued'}
 			</span>
 		{/if}
 

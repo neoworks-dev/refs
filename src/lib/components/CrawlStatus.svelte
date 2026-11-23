@@ -35,7 +35,7 @@
 					></span>
 					<span>
 						<span class="capitalize">{crawl.viewport}</span> · {crawl.status === 'running'
-							? 'Crawling'
+							? 'Exploring'
 							: 'Queued'}
 					</span>
 				</span>
@@ -44,7 +44,7 @@
 						(crawl.status === 'queued' ? 'Waiting for the crawler to pick this up…' : 'Starting…')}
 				</span>
 				<span class="text-neutral-500 tabular-nums dark:text-neutral-400">
-					{crawl.screens} of {crawl.max_screens} screens · {crawl.elements} elements
+					{crawl.screens} screens · {crawl.elements} elements
 				</span>
 			</div>
 		{/each}

@@ -1,7 +1,7 @@
 <script lang="ts">
 	import { enhance } from '$app/forms';
 
-	type FormErrors = { url?: string; viewports?: string; max_screens?: string };
+	type FormErrors = { url?: string; viewports?: string };
 	type FailureData = { errors?: FormErrors; values?: { url?: string } };
 
 	// `initial` carries the server's result when the form was submitted without JS.
@@ -43,7 +43,7 @@
 			What's the URL?
 		</label>
 		<p class="text-center text-[15px] text-neutral-500 dark:text-neutral-400">
-			We'll capture its pages and UI elements.
+			We'll explore it and capture the flows, screens and UI elements worth keeping.
 		</p>
 	</div>
 
@@ -103,30 +103,6 @@
 			<p class="px-1 text-sm text-red-600 dark:text-red-400" role="alert">{errors.viewports}</p>
 		{/if}
 	</fieldset>
-
-	<div class="flex items-center justify-between gap-6">
-		<label for="add-max" class="flex flex-col leading-tight">
-			<span class="text-[15px] font-medium">Max screens</span>
-			<span class="text-[13px] text-neutral-500 dark:text-neutral-400"
-				>Per viewport, states included</span
-			>
-		</label>
-		<div class="flex flex-col items-end gap-1">
-			<input
-				id="add-max"
-				name="max_screens"
-				type="number"
-				min="1"
-				max="500"
-				value="30"
-				aria-invalid={errors.max_screens ? 'true' : undefined}
-				class="h-11 w-28 rounded-full border-0 bg-neutral-100 px-5 text-right text-[15px] focus:ring-2 focus:ring-black dark:bg-white/[0.07] dark:focus:ring-white"
-			/>
-			{#if errors.max_screens}
-				<p class="text-sm text-red-600 dark:text-red-400" role="alert">{errors.max_screens}</p>
-			{/if}
-		</div>
-	</div>
 
 	<button
 		type="submit"

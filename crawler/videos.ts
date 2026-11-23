@@ -12,7 +12,7 @@ import { localMedia, type MediaStore } from '#lib/server/media.ts';
 import { configFromEnv, connect, plain, RecordId } from '#lib/server/surreal.ts';
 import { sourceCrawls } from '#lib/server/library.ts';
 import type { Action, Flow, FlowVideo, Rect, Screen } from '#lib/types.ts';
-import { acceptCookieBanner, closeBrowser, loadPage, openBrowser } from './capture.ts';
+import { clearConsentBanners, closeBrowser, loadPage, openBrowser } from './capture.ts';
 import { setFlowVideo, startRecording, type FlowRecording, type Point } from './recording.ts';
 import { normalizeUrl, urlKey } from './rules.ts';
 
@@ -421,7 +421,7 @@ async function settle(page: Page): Promise<void> {
 	} catch (error) {
 		if (!(error instanceof errors.TimeoutError)) throw error;
 	}
-	await acceptCookieBanner(page, { waitForBanner: false });
+	await clearConsentBanners(page, { waitForBanner: false });
 	await page.evaluate(() => document.fonts.ready);
 }
 

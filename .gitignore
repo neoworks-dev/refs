@@ -29,6 +29,9 @@ vite.config.ts.timestamp-*
 # Crawler output (screenshots, crops)
 /data
 
+# Benchmark snapshots and results
+/bench/runs
+
 # Local Claude Code settings
 /.claude/settings.local.json
 

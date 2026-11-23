@@ -19,5 +19,5 @@ export FLASHINFER_WORKSPACE_BASE=/workspace
 export VLLM_MEMORY_PROFILER_ESTIMATE_CUDAGRAPHS=0
 
 cd /workspace/refs/ml
-nohup uv run --no-default-groups serve --profile "${REFS_PROFILE:-a100}" >/workspace/serve.log 2>&1 &
+nohup uv run serve --profile "${REFS_PROFILE:-a100}" >/workspace/serve.log 2>&1 &
 echo "Starting (pid $!). Loading takes a few minutes: tail -f /workspace/serve.log"

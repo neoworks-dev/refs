@@ -1,33 +1,28 @@
-// Runs the captured screens and section crops of a crawl through the model service (ml/): page
-// type and description per screen, a label per section, an embedding for both, and a category,
-// title and step captions per flow. Resumable, because every pass only picks up what has no
-// result yet, so it backfills crawls from before the models existed and carries on where an
-// interrupted run stopped.
+// Runs the captured screens and section crops of a crawl through the models: page type and
+// description per screen, a label per section, an embedding for both, and a category, title and
+// step captions per flow. Resumable, because every pass only picks up what has no result yet, so it
+// backfills crawls from before the models existed and carries on where an interrupted run stopped.
+// The prompts are in describe.ts.
 //
 // `bun crawler/enrich.ts [site-slug]` enriches the current crawls of one site, or of every site.
 import type { Surreal } from 'surrealdb';
 import { localMedia, type MediaStore } from '#lib/server/media.ts';
+import { embed, ModelError, modelConfigFromEnv } from '#lib/server/models.ts';
 import { configFromEnv, connect, RecordId } from '#lib/server/surreal.ts';
 import { sourceCrawls } from '#lib/server/library.ts';
+import type { FlowCategory } from '#lib/types.ts';
+import { classifyScreen, labelElement, MAX_FLOW_STEPS, nameFlow } from './describe.ts';
 
-const MODEL_SERVICE_URL = process.env.REFS_ML_URL ?? 'http://127.0.0.1:8022';
-
-/**
- * Vector size stored in the database. It must match the HNSW index in db/schema.surql. 1024 found
- * the same neighbours as the model's full 2048 dimensions, while 512 did not (issue #7).
- */
-const EMBEDDING_DIMENSIONS = 1024;
-
-/** A service that is up answers a trivial request at once; this only bounds the wait on a dead one. */
+/** A server that is up answers a trivial request at once; this only bounds the wait on a dead one. */
 const REACHABLE_TIMEOUT_MS = 3000;
 
 /** How many items pass between two progress lines of a long run. */
 const PROGRESS_INTERVAL = 25;
 
 /**
- * One item can't be enriched right now: the model service refused its image, or the file isn't
- * there yet because a running crawl records a screen before its media is written. The run goes on
- * and the next run tries the item again.
+ * One item can't be enriched right now: the model refused its image, or the file isn't there yet
+ * because a running crawl records a screen before its media is written. The run goes on and the
+ * next run tries the item again.
  */
 export class ItemSkipped extends Error {}
 
@@ -41,7 +36,7 @@ interface ScreenToEnrich {
 interface FlowToName {
 	id: RecordId;
 	/** Set on goal flows, which are born with a category and a title that naming must keep. */
-	category?: string;
+	category?: FlowCategory;
 	/** The steps as stored, so naming only adds captions and leaves screens and actions alone. */
 	steps: { screen: RecordId; action?: RecordId; caption?: string; thought?: string }[];
 	urls: string[];
@@ -55,10 +50,12 @@ interface SectionToEnrich {
 	image: string;
 }
 
-/** Whether the model service answers at all, so callers can skip model work instead of failing. */
+/** Whether the model server answers at all, so callers can skip model work instead of failing. */
 export async function isModelServiceReachable(): Promise<boolean> {
+	const { vlm } = modelConfigFromEnv(process.env);
 	try {
-		const response = await fetch(`${MODEL_SERVICE_URL}/name-flow/categories`, {
+		const response = await fetch(`${vlm.url}/models`, {
+			headers: vlm.apiKey === undefined ? {} : { authorization: `Bearer ${vlm.apiKey}` },
 			signal: AbortSignal.timeout(REACHABLE_TIMEOUT_MS)
 		});
 		return response.ok;
@@ -73,26 +70,7 @@ export async function isModelServiceReachable(): Promise<boolean> {
 	}
 }
 
-/** Posts a form to the model service. Requests go one at a time, as the GPU serves one at a time. */
-export async function callModel<Result>(endpoint: string, form: FormData): Promise<Result> {
-	let response: Response;
-	try {
-		response = await fetch(`${MODEL_SERVICE_URL}${endpoint}`, { method: 'POST', body: form });
-	} catch (error) {
-		// fetch only rejects when no response arrived at all: the service is down or not listening.
-		throw new Error(
-			`The model service at ${MODEL_SERVICE_URL} is not reachable (${(error as Error).message}). ` +
-				'Start it with "cd ml && uv run serve", or set REFS_ML_URL.',
-			{ cause: error }
-		);
-	}
-	if (!response.ok) {
-		throw new ItemSkipped(`${endpoint} answered ${response.status}: ${await response.text()}`);
-	}
-	return (await response.json()) as Result;
-}
-
-/** Runs one pass over `items`. An image the model refuses is logged and left for the next run. */
+/** Runs one pass over `items`. An image the model refuses or fails on is logged and left for the next run. */
 async function runPass<Item extends { id: RecordId }>(
 	name: string,
 	items: Item[],
@@ -105,7 +83,7 @@ async function runPass<Item extends { id: RecordId }>(
 		try {
 			await enrichItem(item);
 		} catch (error) {
-			if (!(error instanceof ItemSkipped)) throw error;
+			if (!(error instanceof ItemSkipped || error instanceof ModelError)) throw error;
 			failed++;
 			console.warn(`  ${name} ${String(item.id.id)} skipped: ${error.message}`);
 		}
@@ -121,35 +99,27 @@ async function runPass<Item extends { id: RecordId }>(
 	);
 }
 
+/** So a worker that enriches many crawls says once that there is no embedder, not once per crawl. */
+let reportedMissingEmbedder = false;
+
 /**
  * Fills in what the models contribute to one crawl: `page_type` and `description` of its screens,
  * `label` of its sections, `embedding` of both, and `category`, `title` and step captions of its
  * flows. Only items without a result are sent, so it is safe to call again on a finished or
- * half-enriched crawl. A flow that already has a category is never renamed; a goal flow, which
- * is born with one, still gets its captions.
+ * half-enriched crawl. A flow that already has a category is never renamed; a flow that was born
+ * with one still gets its captions. Flows cut from the old structural crawl are not named.
  */
 export async function enrichCrawl(
 	db: Surreal,
 	crawlId: RecordId,
 	mediaStore: MediaStore = localMedia(process.env.MEDIA_DIR ?? 'data/media')
 ): Promise<void> {
-	async function imageForm(key: string): Promise<FormData> {
+	const models = modelConfigFromEnv(process.env);
+
+	async function readImage(key: string): Promise<Uint8Array> {
 		const bytes = await mediaStore.get(key);
 		if (bytes === undefined) throw new ItemSkipped(`media file is missing: ${key}`);
-		const form = new FormData();
-		form.set(
-			'image',
-			new Blob([bytes as Uint8Array<ArrayBuffer>], { type: 'image/webp' }),
-			'image.webp'
-		);
-		return form;
-	}
-
-	async function embedImage(key: string): Promise<number[]> {
-		const form = await imageForm(key);
-		form.set('dimensions', String(EMBEDDING_DIMENSIONS));
-		const result = await callModel<{ vector: number[] }>('/embed', form);
-		return result.vector;
+		return bytes;
 	}
 
 	const sectionsOfCrawl = `kind = 'section' AND crawl = $crawl`;
@@ -166,7 +136,8 @@ export async function enrichCrawl(
 				 	WHERE ${sectionsOfCrawl} AND embedding IS NONE;
 				 SELECT id, category, steps, steps.screen.url AS urls, steps.screen.media.viewport AS images,
 				 	steps.action.label AS labels FROM flow
-				 	WHERE crawl = $crawl AND (category IS NONE OR (source = 'goal' AND steps[0].caption IS NONE));`,
+				 	WHERE crawl = $crawl AND source IN ['goal', 'request']
+				 		AND (category IS NONE OR steps[0].caption IS NONE);`,
 				{ crawl: crawlId }
 			)
 			.collect<
@@ -176,52 +147,41 @@ export async function enrichCrawl(
 	console.log(`crawl ${String(crawlId.id)}`);
 
 	await runPass('classify screens', unclassified, async (screen) => {
-		const form = await imageForm(screen.image);
-		form.set('url', screen.url);
-		form.set('title', screen.title);
-		const result = await callModel<{ page_type: string; description: string }>(
-			'/classify-screen',
-			form
-		);
+		const { pageType, description } = await classifyScreen(models.vlm, {
+			image: await readImage(screen.image),
+			url: screen.url,
+			title: screen.title
+		});
 		await db
 			.query('UPDATE $screen SET page_type = $pageType, description = $description', {
 				screen: screen.id,
-				pageType: result.page_type,
-				description: result.description
+				pageType,
+				description
 			})
 			.collect();
 	});
 
 	await runPass('label sections', sectionsWithoutLabel, async (section) => {
-		const form = await imageForm(section.image);
-		form.set('kind', 'section');
-		const result = await callModel<{ label: string }>('/label-element', form);
-		await db
-			.query('UPDATE $element SET label = $label', { element: section.id, label: result.label })
-			.collect();
+		const label = await labelElement(models.vlm, {
+			image: await readImage(section.image),
+			kind: 'section'
+		});
+		await db.query('UPDATE $element SET label = $label', { element: section.id, label }).collect();
 	});
 
 	await runPass('name flows', unnamedFlows, async (flow) => {
-		const form = new FormData();
-		for (const key of flow.images) {
-			const bytes = await mediaStore.get(key);
-			if (bytes === undefined) throw new ItemSkipped(`media file is missing: ${key}`);
-			form.append(
-				'images',
-				new Blob([bytes as Uint8Array<ArrayBuffer>], { type: 'image/webp' }),
-				'image.webp'
-			);
-		}
-		form.set(
-			'steps',
-			JSON.stringify(
-				flow.urls.map((url, index) => ({ url, action_label: flow.labels[index] ?? '' }))
-			)
-		);
-		if (flow.category !== undefined) form.set('category', flow.category);
-		const result = await callModel<{ category: string; title: string; captions: string[] }>(
-			'/name-flow',
-			form
+		// Reading only the steps the model will look at also spares the files of a long flow.
+		const shownImages = flow.images.slice(0, MAX_FLOW_STEPS);
+		const result = await nameFlow(
+			models.vlm,
+			await Promise.all(
+				shownImages.map(async (key, index) => ({
+					image: await readImage(key),
+					url: flow.urls[index],
+					actionLabel: flow.labels[index]
+				}))
+			),
+			flow.category
 		);
 		// The model only sees the first steps of a long flow, so later steps get no caption.
 		const steps = flow.steps.map((step, index) => ({ ...step, caption: result.captions[index] }));
@@ -240,15 +200,24 @@ export async function enrichCrawl(
 			.collect();
 	});
 
+	const embedder = models.embedding;
+	if (embedder === undefined) {
+		// Nothing is retried or failed: the items stay without an embedding until an embedder is set.
+		if (!reportedMissingEmbedder)
+			console.log('  embeddings skipped: REFS_EMBEDDING_URL is not set');
+		reportedMissingEmbedder = true;
+		return;
+	}
+
 	await runPass('embed screens', unembeddedScreens, async (screen) => {
-		const vector = await embedImage(screen.image);
+		const vector = await embed(embedder, { image: await readImage(screen.image) });
 		await db
 			.query('UPDATE $screen SET embedding = $vector', { screen: screen.id, vector })
 			.collect();
 	});
 
 	await runPass('embed sections', unembeddedSections, async (section) => {
-		const vector = await embedImage(section.image);
+		const vector = await embed(embedder, { image: await readImage(section.image) });
 		await db
 			.query('UPDATE $element SET embedding = $vector', { element: section.id, vector })
 			.collect();

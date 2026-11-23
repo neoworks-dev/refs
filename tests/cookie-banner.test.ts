@@ -90,3 +90,44 @@ describe('banners in a shadow root', () => {
 		expect(await page.locator('#widget-host .notice').count()).toBe(0);
 	});
 });
+
+describe('banners that cannot be accepted', () => {
+	test('a consent wall with only "reject" and "settings" is hidden with its backdrop, the scroll lock is undone and the page is left alone', async () => {
+		const page = await openFixture('consent-settings-only.html');
+
+		expect(await acceptCookieBanner(page, { waitForBanner: false })).toBe(false);
+		expect(await page.evaluate(() => window.pageInspector!.hasConsentBanner())).toBe(true);
+		expect(await page.evaluate(() => window.pageInspector!.removeConsentBanners())).toBe(1);
+
+		expect(await page.locator('.wall').isVisible()).toBe(false);
+		expect(await page.locator('.backdrop').isVisible()).toBe(false);
+		await page.evaluate(() => window.scrollTo({ top: 300, behavior: 'instant' }));
+		expect(await page.evaluate(() => window.scrollY)).toBe(300);
+		// The page's own privacy section and its fixed footer are content.
+		expect(await page.locator('.privacy-section').isVisible()).toBe(true);
+		expect(await page.locator('.footer').isVisible()).toBe(true);
+		expect(await page.evaluate(() => window.pageInspector!.hasConsentBanner())).toBe(false);
+	});
+
+	test('a banner in a shadow root that shows up late is hidden by the guard, and the position lock on the body is undone', async () => {
+		const page = await openFixture('consent-late-locked.html');
+		await page.evaluate(() => window.pageInspector!.keepConsentBannersHidden());
+
+		await page.waitForFunction(() => document.getElementById('consent-host') !== null);
+		await page.waitForFunction(() => getComputedStyle(document.body).position === 'static');
+
+		expect(await page.evaluate(() => window.pageInspector!.hasConsentBanner())).toBe(false);
+		await page.evaluate(() => window.scrollTo({ top: 300, behavior: 'instant' }));
+		expect(await page.evaluate(() => window.scrollY)).toBe(300);
+	});
+
+	test('a sign-up dialog or a policy notice that mentions privacy is not a consent banner', async () => {
+		const page = await openFixture('signup-dialog.html');
+
+		expect(await page.evaluate(() => window.pageInspector!.hasConsentBanner())).toBe(false);
+		expect(await page.evaluate(() => window.pageInspector!.removeConsentBanners())).toBe(0);
+
+		expect(await page.locator('#signup').isVisible()).toBe(true);
+		expect(await page.locator('#terms').isVisible()).toBe(true);
+	});
+});

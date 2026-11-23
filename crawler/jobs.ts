@@ -21,15 +21,10 @@ export interface CrawlJob {
 	id: RecordId;
 	site: RecordId;
 	viewport: Viewport;
-	max_screens: number;
-	max_depth: number;
 	/** Missing on crawls from before exploration existed. */
 	max_trajectories?: number;
 	finished_at?: Date;
 }
-
-export const DEFAULT_MAX_SCREENS = 30;
-export const DEFAULT_MAX_DEPTH = 3;
 
 /**
  * Finds the site for a URL or creates it. One site per host, where `www.` doesn't count; the record
@@ -60,15 +55,13 @@ export async function queueCrawl(
 	db: Surreal,
 	site: SiteRow,
 	viewport: Viewport,
-	limits: { maxScreens?: number; maxDepth?: number; maxTrajectories?: number } = {}
+	limits: { maxTrajectories?: number } = {}
 ): Promise<CrawlJob> {
 	const [created] = await db
 		.query('CREATE ONLY crawl CONTENT $content', {
 			content: {
 				site: site.id,
 				viewport,
-				max_screens: limits.maxScreens ?? DEFAULT_MAX_SCREENS,
-				max_depth: limits.maxDepth ?? DEFAULT_MAX_DEPTH,
 				// Left out when not given, so the schema's default applies.
 				...(limits.maxTrajectories === undefined
 					? {}

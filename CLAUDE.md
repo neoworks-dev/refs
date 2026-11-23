@@ -11,11 +11,11 @@ src/              SvelteKit 3 app (Svelte 5, Tailwind 4, adapter-node)
 src/lib/server/   surreal.ts (connection, schema, plain()), media.ts (storage), db.ts (app singletons), library.ts (queries the app and the MCP share), queries.ts (the app's own queries), mcp/ (the MCP server)
 src/lib/types.ts  plain shapes of the database records, shared by app and crawler
 src/env.ts        server env vars, declared with defineEnvVars
-crawler/          Playwright crawler run with bun: worker (job queue), cli, crawl loop, capture, in-page code, rules, exploration (explore, trajectory, agent, goals), demo accounts (accounts, mail)
+crawler/          Playwright crawler run with bun: worker (crawl and flow request queues), cli, crawl (landing page, then the run), capture, in-page code, rules, exploration (explore, goals for planning, trajectory, agent), requests (flows people ask for), demo accounts (accounts, mail)
 db/schema.surql   the data contract, applied on every connect; must stay idempotent
 references/       Mobbin screenshots used as design references (images gitignored, README indexes them)
 data/             crawler output (gitignored)
-ml/               uv-managed Python service: llama.cpp VLM on :8020, vLLM embedder on :8021, FastAPI on :8022
+ml/               uv-managed launcher for local model servers (VLM on :8020, embedder on :8021), for development only
 ```
 
 SurrealDB 3.3 runs in docker on `127.0.0.1:8010`, because port 8000 belongs to another project. The data model is in `db/schema.surql`, and its comments are the spec. In short, `site` is a website, `crawl` is one job for one site and one viewport and doubles as the work queue, `screen` is a captured page or UI state, `element` is a crop from a screen, and the `action` relation records which click or link led from one screen to another. Rects are CSS pixels in page coordinates. Media keys are paths like `sites/<site>/<viewport>/<screen>/full.webp`, served under `/media/` with immutable caching, so a key is never overwritten.
@@ -24,16 +24,18 @@ Every site is captured on desktop (1440x900) and on mobile (iPhone 15 Pro), both
 
 ## Commands
 
-The `Taskfile.yml` wraps these (`go-task --list`); `go-task up` runs the app, the worker and the model service together.
+The `Taskfile.yml` wraps these (`go-task --list`); `go-task up` runs the app and the worker together.
 
 ```
 bun run db:up      start SurrealDB
 bun run dev        the app
 bun run crawler    the worker that picks up queued crawls
-bun run crawl <url> [--viewport desktop|mobile|both] [--max-screens N] [--max-depth N]
+bun run crawl <url> [--viewport desktop|mobile|both] [--max-trajectories N] [--plan-only]
+bun run request <site> "<goal>" [--viewport desktop|mobile|both] [--queue]
+bun run login <site>     sign up or log in to the demo account by hand, for sites whose bot protection refuses the crawler
 bun run check      type check everything, including crawler/
 bun run build
-cd ml && uv run serve           the model servers and the API (uv run serve download fetches weights)
+cd ml && uv run serve           a local VLM server for development (uv run serve download fetches weights)
 ```
 
 ## SvelteKit 3
@@ -53,13 +55,15 @@ Kit 3 differs from v2 in ways that are easy to get wrong from memory. Check `nod
 3. AI exploration: goal-directed browsing and flows.
 4. The element library across sites, collections, and dark mode.
 
-The models run locally on a 16 GB GPU. Holo3.1-4B, a fine-tune of Qwen3.5, drives the browser and classifies screens. It runs as a Q6_K GGUF on llama.cpp, so it fits next to the embedder, and it passed the exploration eval (8 of 10 real multi-step tasks, see `ml/README.md`). If it proves too weak on our screens, Qwen3.8-27B at IQ3_S replaces it as another profile in `ml/refs_ml/serve.py`. Qwen3-VL-Embedding-2B produces embeddings, and OmniParser v2.0.1 detects elements only where the DOM gives us nothing usable.
+The crawler and the app call the models directly over the OpenAI-compatible API (`src/lib/server/models.ts`), and the prompts live in TypeScript next to the code that sends them. Where the models run is configuration in `.env`. A local model on a 16 GB GPU proved too weak, so the models run hosted; which provider and which model per role (planning, deciding each step, pointing at elements) is still being decided on cost per site. `ml/` only starts local servers for development. There is no embedder for now, so nothing is embedded and search by meaning is off until `REFS_EMBEDDING_URL` is set.
 
-Flows will be cut out of the action graph by structure first. A flow starts at a main navigation click and continues while the URL stays under one prefix, the same dialog or form advances, or the clicked labels are words like "Continue". The model then names each flow with a category from a fixed list, a free-text title and a caption per step. Goal-directed exploration produces flows that are labelled by construction.
+A crawl opens the landing page, accepts the cookie banner, captures it as the first screen and learns the site's name, icon and cover from it. The model is then asked once, with the screenshot, the page's links and headings and what it knows about the product, which flows are worth recording. It lists the site's areas first and the flows per area, so the list covers the whole site. How many flows that is, a dozen for a shop and hundreds for a product like Figma, is the model's call, and `crawl.max_trajectories` only bounds how many a run tries. Every flow has a goal, a category from a fixed list, a start path, a success criterion and whether it needs the login. The browser agent (`crawler/trajectory.ts`) tries each one in a fresh browser and saves the attempt as a flow with source `goal`, whether it reached its goal or not, with a video. With a demo account the planning is repeated from the signed-in landing page for the flows behind the login. `bun run crawl <url> --plan-only` prints the plan without crawling.
+
+People can also ask for a flow in the UI (`flow_request`). The worker tries it between crawls, inside the site's current crawl for that viewport, starting logged in when the demo account is active and the model judges the goal to need it, and saves it with source `request`. A site without a crawl for the viewport refuses the request. Flows with source `structure` come from the old structural crawl, which cut them from the action graph. They stay readable, and nothing creates them any more.
 
 The library is also available to models through an MCP server at `/mcp`, hosted at `https://refs.neoworks.dev/mcp`. It is read-only, needs an API key (`bun run api-key create <name>`, stored as a SHA-256 hash in `api_key`), and has exactly two tools, because fewer tools are easier for a model to use well. `search` finds sites, pages, screens and elements, optionally scoped to one site and one page path. `get` returns everything about one screen or site. Results are inline preview images followed by one JSON block, modelled on Mobbin's MCP, without its telemetry parameters. Keep it to two tools; flows become a new `type` of `search`, not a new tool. Auth gets revisited before hosting.
 
-Exploration may sign up and log in, with one demo account per site (the `account` table, shared by both viewports). Its address is a plus address of the demo Gmail inbox (`REFS_MAIL_ADDRESS`, read over IMAP with `REFS_MAIL_APP_PASSWORD`), so the verification email of a sign-up lands in one place and says which site it was for. Its password is random. The model gets the email and password in its context and types them itself, plus a made-up name; payment details, phone numbers, other people's data, and "Continue with Google" style logins stay refused. The crawler opens verification links itself and hands codes to the model. After a login the browser's storage state is saved in `account.storage_state`, and goals that need the login start from it. Screens and goal flows captured while logged in carry `signed_in`, and the UI labels them. The structural crawl still captures only what a visitor sees. Passwords and storage state are plain text in the database, which has to change before hosting (#17).
+Exploration may sign up and log in, with one demo account per site (the `account` table, shared by both viewports). Its address is a plus address of the demo Gmail inbox (`REFS_MAIL_ADDRESS`, read over IMAP with `REFS_MAIL_APP_PASSWORD`), so the verification email of a sign-up lands in one place and says which site it was for. Its password is random. The model gets the email and password in its context and types them itself, plus a made-up name; payment details, phone numbers, other people's data, and "Continue with Google" style logins stay refused. The crawler opens verification links itself and hands codes to the model. After a login the browser's storage state is saved in `account.storage_state`, and goals that need the login start from it. Most real products guard their sign-up with bot protection (GitHub, resend.com), and the crawler does not try to get around it. There a person runs `bun run login <site>` once and signs up with the account's address and password in a plain Chrome that nothing controls (`crawler/login.ts`). Only then does the crawler connect to read the cookies and local storage, which are saved the same way. Screens and goal flows captured while logged in carry `signed_in`, and the UI labels them. The landing page and the flows planned for a visitor capture only what a visitor sees. Passwords and storage state are plain text in the database, which has to change before hosting (#17).
 
 ## How we work
 
@@ -75,6 +79,7 @@ The code is written to be read by people seeing it for the first time, as if it 
 - Give a function a short doc comment saying why it exists when its name doesn't make that obvious.
 - Use readable names. Never use single letters such as `e`, `p`, `k` or `s`, and that includes callback parameters, loop variables and event handlers. A plain numeric loop index `i` is the only exception. Don't use project abbreviations either.
 - Don't use the nullish assignment `??=` unless there is no other way. Write the explicit `if (value === undefined)` instead.
+- Never nest ternaries. Use `if` statements, an early return, or a lookup instead.
 - Keep logic where it's used. Don't create a function or a component just because you can. A helper used once stays inline at its call site, and something gets extracted only when it is reused or is a genuinely separate concept.
 - Don't make files unnecessarily large either. Split modules along their responsibilities, never by size, and don't create tiny files.
 - Keep constants next to the code that uses them, named, with a comment saying why the value was chosen. Types live with what produces them.
@@ -138,7 +143,7 @@ Area is a label, exactly one of:
 
 - `area:crawler` is the capture side: exploration, screenshots, extraction and dedupe.
 - `area:ui` is the SvelteKit app.
-- `area:models` is the model service and everything the models produce.
+- `area:models` is the models, their prompts and providers, and everything they produce.
 - `area:data` is the schema, queries and media storage.
 - `area:infra` is docker, deployment and tooling.
 

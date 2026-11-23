@@ -22,17 +22,20 @@ DEFINE FIELD OVERWRITE updated_at ON site TYPE datetime DEFAULT ALWAYS time::now
 DEFINE INDEX IF NOT EXISTS site_slug ON site FIELDS slug UNIQUE;
 DEFINE INDEX IF NOT EXISTS site_host ON site FIELDS host UNIQUE;
 
--- One crawl job: one site, one viewport. The crawler worker picks up `queued` jobs.
+-- One exploration of a site in one viewport, which doubles as the job the crawler worker picks up
+-- when it is `queued`. The model looks at the landing page, plans the flows worth capturing, and
+-- tries each of them; every screen and flow it captures belongs to the crawl.
 DEFINE TABLE OVERWRITE crawl SCHEMAFULL;
 DEFINE FIELD OVERWRITE site ON crawl TYPE record<site>;
 DEFINE FIELD OVERWRITE viewport ON crawl TYPE string ASSERT $value IN ['desktop', 'mobile'];
 DEFINE FIELD OVERWRITE status ON crawl TYPE string DEFAULT 'queued'
 	ASSERT $value IN ['queued', 'running', 'done', 'failed', 'cancelled'];
-DEFINE FIELD OVERWRITE max_screens ON crawl TYPE int DEFAULT 30;
-DEFINE FIELD OVERWRITE max_depth ON crawl TYPE int DEFAULT 3;
--- The model tries every goal a visitor could plausibly have on the site; this only bounds how long
--- one crawl can run (a goal takes about half a minute). 0 skips exploration.
+-- The model decides how many flows a site deserves, a dozen for a shop and hundreds for a product
+-- like Figma; this only bounds how long one crawl can run (a flow takes about half a minute).
 DEFINE FIELD OVERWRITE max_trajectories ON crawl TYPE int DEFAULT 100;
+-- Limits of the structural crawl, which exploration replaced.
+REMOVE FIELD IF EXISTS max_screens ON crawl;
+REMOVE FIELD IF EXISTS max_depth ON crawl;
 -- Counters updated while running, for progress display.
 DEFINE FIELD OVERWRITE screens ON crawl TYPE int DEFAULT 0;
 DEFINE FIELD OVERWRITE elements ON crawl TYPE int DEFAULT 0;
@@ -133,14 +136,15 @@ DEFINE FIELD OVERWRITE rect.w ON action TYPE number;
 DEFINE FIELD OVERWRITE rect.h ON action TYPE number;
 
 -- A flow: an ordered run of screens that belongs together, like the pricing pages or a signup
--- form's steps. Cut out of one crawl's action graph by structure (crawler/flows.ts) and recut
--- from scratch whenever that runs again; goal-directed exploration will add flows of its own.
+-- form's steps, captured while the model tried to reach a goal.
 DEFINE TABLE OVERWRITE flow SCHEMAFULL;
 DEFINE FIELD OVERWRITE site ON flow TYPE record<site>;
 DEFINE FIELD OVERWRITE crawl ON flow TYPE record<crawl>;
 DEFINE FIELD OVERWRITE viewport ON flow TYPE string ASSERT $value IN ['desktop', 'mobile'];
--- 'structure' is cut from the action graph, 'goal' comes from goal-directed exploration.
-DEFINE FIELD OVERWRITE source ON flow TYPE 'structure' | 'goal';
+-- 'goal' was planned by the model during exploration, 'request' was asked for by a person (see
+-- `flow_request`). 'structure' flows were cut from the action graph of the structural crawl, which
+-- no longer runs; old ones stay readable.
+DEFINE FIELD OVERWRITE source ON flow TYPE 'structure' | 'goal' | 'request';
 -- Set from the label of the click that starts the flow; the model replaces it with a real title.
 DEFINE FIELD OVERWRITE title ON flow TYPE string DEFAULT '';
 -- One of a fixed list chosen by the model (milestone 3), e.g. 'onboarding', 'pricing'.
@@ -154,7 +158,7 @@ DEFINE FIELD OVERWRITE steps[*].action ON flow TYPE option<record<action>>;
 DEFINE FIELD OVERWRITE steps[*].caption ON flow TYPE option<string>;
 -- Goal flows only: why the model chose this step, in its own words.
 DEFINE FIELD OVERWRITE steps[*].thought ON flow TYPE option<string>;
--- Goal flows only: the goal the model set itself after surveying the site, how the attempt ended,
+-- Goal and requested flows: the goal the model set itself or was given, how the attempt ended,
 -- and its reason. 'done' reached the goal, 'gave_up' found it unreachable without logging in or
 -- paying, 'blocked' stopped at a form asking for personal data, 'stuck' kept repeating itself,
 -- 'step_limit' ran out of steps, 'error' failed in the browser.
@@ -243,3 +247,21 @@ DEFINE FIELD OVERWRITE screenshot ON live_goal TYPE option<bytes>;
 DEFINE FIELD OVERWRITE updated_at ON live_goal TYPE datetime VALUE time::now();
 DEFINE INDEX IF NOT EXISTS live_goal_slot ON live_goal FIELDS crawl, slot UNIQUE;
 DEFINE INDEX IF NOT EXISTS live_goal_site ON live_goal FIELDS site;
+
+-- A flow a person asked for, like "switch the pricing to yearly and open the Team plan". The worker
+-- picks up `queued` requests between crawls and tries the goal in the site's current crawl for the
+-- viewport, so the captured screens and the flow show up with the rest of the site. A site that
+-- has not been explored in that viewport yet fails the request.
+DEFINE TABLE OVERWRITE flow_request SCHEMAFULL;
+DEFINE FIELD OVERWRITE site ON flow_request TYPE record<site>;
+DEFINE FIELD OVERWRITE viewport ON flow_request TYPE 'desktop' | 'mobile';
+DEFINE FIELD OVERWRITE goal ON flow_request TYPE string;
+DEFINE FIELD OVERWRITE status ON flow_request TYPE 'queued' | 'running' | 'done' | 'failed' DEFAULT 'queued';
+-- The flow the attempt produced. A run that reached nothing worth keeping has none.
+DEFINE FIELD OVERWRITE flow ON flow_request TYPE option<record<flow>>;
+DEFINE FIELD OVERWRITE error ON flow_request TYPE option<string>;
+DEFINE FIELD OVERWRITE created_at ON flow_request TYPE datetime DEFAULT time::now() READONLY;
+DEFINE FIELD OVERWRITE started_at ON flow_request TYPE option<datetime>;
+DEFINE FIELD OVERWRITE finished_at ON flow_request TYPE option<datetime>;
+DEFINE INDEX IF NOT EXISTS flow_request_status ON flow_request FIELDS status, created_at;
+DEFINE INDEX IF NOT EXISTS flow_request_site ON flow_request FIELDS site;

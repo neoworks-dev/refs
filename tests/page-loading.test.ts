@@ -93,7 +93,7 @@ describe('chat launchers', () => {
 		expect(await page.locator('#help-nav').isVisible()).toBe(true);
 		expect(await page.getByRole('link', { name: 'Contact support' }).isVisible()).toBe(true);
 		// Fixed in the bottom corner and mentions "help", but it is a wide bar, not a bubble.
-		expect(await page.locator('#cookie-bar').isVisible()).toBe(true);
+		expect(await page.locator('#feedback-bar').isVisible()).toBe(true);
 	});
 
 	test('a "Help" entry in a mobile tab bar is navigation and stays', async () => {

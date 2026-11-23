@@ -1,6 +1,6 @@
 version: '3'
 
-# Everything runs from the repo root, except the model service, which lives in ml/.
+# Everything runs from the repo root, except the local model servers, which live in ml/.
 # Pass arguments after `--`, e.g. `task crawl -- https://linear.app --viewport both`.
 
 tasks:
@@ -16,13 +16,13 @@ tasks:
       - bun run dev {{.CLI_ARGS}}
 
   crawler:
-    desc: Start the worker that picks up queued crawls
+    desc: Start the worker that picks up queued crawls and flow requests
     deps: [db]
     cmds:
       - bun crawler/worker.ts
 
   ml:
-    desc: Start the model servers and their API (VLM on 8020, embedder on 8021, API on 8022)
+    desc: Start a local VLM server for development on 8020 (add embeddings for the embedder on 8021)
     dir: ml
     cmds:
       - uv run serve {{.CLI_ARGS}}
@@ -36,32 +36,34 @@ tasks:
   ml:tunnel:
     desc: 'Reach the models on a rented GPU through SSH, e.g. task ml:tunnel -- root@1.2.3.4 -p 12345'
     cmds:
-      - ssh -N -L 8022:127.0.0.1:8022 {{.CLI_ARGS}}
+      - ssh -N -L 8020:127.0.0.1:8020 {{.CLI_ARGS}}
 
   up:
-    desc: Run the app, the crawler worker and the model service together
-    deps: [dev, crawler, ml]
+    desc: Run the app and the crawler worker together
+    deps: [dev, crawler]
 
   crawl:
-    desc: 'Crawl a site now, e.g. task crawl -- https://linear.app --viewport both'
+    desc: 'Crawl a site now, e.g. task crawl -- https://linear.app --viewport both --max-trajectories 20'
     deps: [db]
     cmds:
       - bun crawler/cli.ts {{.CLI_ARGS}}
+
+  plan:
+    desc: 'Print the flows the model would plan for a site, without crawling, e.g. task plan -- https://linear.app'
+    deps: [db]
+    cmds:
+      - bun crawler/cli.ts --plan-only {{.CLI_ARGS}}
+
+  request:
+    desc: 'Ask for one flow on a crawled site and run it now, e.g. task request -- linear-app "Open the pricing page" --viewport mobile'
+    deps: [db]
+    cmds:
+      - bun crawler/cli.ts request {{.CLI_ARGS}}
 
   enrich:
     desc: Run the models over the current crawls, optionally of one site slug
     cmds:
       - bun crawler/enrich.ts {{.CLI_ARGS}}
-
-  explore:
-    desc: Let the model set goals for the current crawls and try them, optionally of one site slug
-    cmds:
-      - bun crawler/explore.ts {{.CLI_ARGS}}
-
-  flows:
-    desc: Recut the flows of the current crawls, optionally of one site slug
-    cmds:
-      - bun crawler/flows.ts {{.CLI_ARGS}}
 
   api-key:
     desc: 'Manage MCP API keys, e.g. task api-key -- create "Laptop"'

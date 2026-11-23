@@ -18,8 +18,8 @@ export type ElementKind =
 	| 'menu'
 	| 'table';
 
-// The model service's fixed vocabularies, so the app can filter by them. The source is
-// ml/refs_ml/schemas.py (PAGE_TYPES, FLOW_CATEGORIES and ELEMENT_LABELS['section']): these lists must match it.
+// The fixed vocabularies the models answer in, here so the app can filter by them and the crawler's
+// prompts can list them. The element labels of the other kinds live with the labelling prompt.
 export const PAGE_TYPES = [
 	'home',
 	'pricing',
@@ -45,25 +45,33 @@ export const PAGE_TYPES = [
 ] as const;
 export type PageType = (typeof PAGE_TYPES)[number];
 
-export const FLOW_CATEGORIES = [
-	'onboarding',
-	'signing_up',
-	'logging_in',
-	'checkout',
-	'subscribing',
-	'pricing_and_plans',
-	'searching',
-	'filtering_and_sorting',
-	'browsing_products',
-	'reading_content',
-	'exploring_features',
-	'contacting',
-	'getting_help',
-	'customer_stories',
-	'settings',
-	'other'
-] as const;
-export type FlowCategory = (typeof FLOW_CATEGORIES)[number];
+/**
+ * Flow categories, following Mobbin's flow tree adapted to websites. The model reads the
+ * descriptions, because a bare name like "exploring_features" is too easy to use for any run of
+ * marketing pages, and they decide between near neighbours.
+ */
+export const FLOW_CATEGORY_DESCRIPTIONS = {
+	onboarding: 'first-run setup after signing up: welcome steps, preferences, invitations',
+	signing_up: 'creating an account or starting a free trial: registration forms',
+	logging_in: 'signing in, password reset and verification steps',
+	checkout: 'cart, shipping, payment and order confirmation',
+	subscribing: 'choosing a plan and paying for it or upgrading',
+	pricing_and_plans: 'comparing prices, plans and tiers',
+	searching: 'typing a query and looking at the results',
+	filtering_and_sorting: 'narrowing or ordering a list with filters, tabs or sort controls',
+	browsing_products:
+		'looking through products, offers, deals, recipes or listings, and opening one',
+	reading_content: 'reading articles, blog posts, documentation or guides',
+	exploring_features:
+		'learning what a product does, page by page: product, solution and feature pages',
+	contacting: 'reaching the company: contact, sales or demo request forms',
+	getting_help: 'support, help center, FAQ and status pages',
+	customer_stories: 'case studies, testimonials and customer lists',
+	settings: 'account, profile or preference settings',
+	other: 'none of the above'
+} as const;
+export const FLOW_CATEGORIES = Object.keys(FLOW_CATEGORY_DESCRIPTIONS) as FlowCategory[];
+export type FlowCategory = keyof typeof FLOW_CATEGORY_DESCRIPTIONS;
 
 export const SECTION_LABELS = [
 	'hero',
@@ -109,8 +117,6 @@ export interface Crawl {
 	site: string;
 	viewport: Viewport;
 	status: CrawlStatus;
-	max_screens: number;
-	max_depth: number;
 	max_trajectories: number;
 	screens: number;
 	elements: number;
@@ -200,11 +206,12 @@ export interface Flow {
 	site: string;
 	crawl: string;
 	viewport: Viewport;
-	source: 'structure' | 'goal';
+	/** 'goal' was planned by the model, 'request' asked for by a person, 'structure' is legacy. */
+	source: 'structure' | 'goal' | 'request';
 	title: string;
 	category?: string;
 	steps: FlowStep[];
-	/** Goal flows only: the goal the model set itself, and how the attempt ended. */
+	/** Goal and requested flows: the goal the model set itself or was given, and how it ended. */
 	goal?: string;
 	outcome?: FlowOutcome;
 	outcome_reason?: string;
@@ -212,6 +219,22 @@ export interface Flow {
 	signed_in?: boolean;
 	video?: FlowVideo;
 	created_at: string;
+}
+
+export type FlowRequestStatus = 'queued' | 'running' | 'done' | 'failed';
+
+export interface FlowRequest {
+	id: string;
+	site: string;
+	viewport: Viewport;
+	goal: string;
+	status: FlowRequestStatus;
+	/** The flow the attempt produced, once there is one. */
+	flow?: string;
+	error?: string;
+	created_at: string;
+	started_at?: string;
+	finished_at?: string;
 }
 
 export interface Collection {

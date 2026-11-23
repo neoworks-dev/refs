@@ -1,5 +1,9 @@
+import { fail } from '@sveltejs/kit';
+import { db } from '#lib/server/db.ts';
+import { sourceCrawls } from '#lib/server/library.ts';
 import {
 	cancelCrawls,
+	createFlowRequest,
 	getFlowSteps,
 	getScreenDetail,
 	listElements,
@@ -9,6 +13,9 @@ import {
 } from '#lib/server/queries.ts';
 import type { ElementKind, SectionLabel, Viewport } from '#lib/types.ts';
 import type { Actions, PageServerLoad } from './$types';
+
+// A goal is a sentence or two; this stops a pasted page from becoming the browser agent's task.
+const MAX_GOAL_CHARACTERS = 300;
 
 export const load: PageServerLoad = async ({ url, parent }) => {
 	// Calling parent() also re-runs this load whenever the layout is invalidated, which is what
@@ -81,5 +88,22 @@ export const actions: Actions = {
 	},
 	cancel: async ({ params }) => {
 		await cancelCrawls(params.slug);
+	},
+	requestFlow: async ({ request, params }) => {
+		const form = await request.formData();
+		const goal = String(form.get('goal') ?? '').trim();
+		const viewport = String(form.get('viewport'));
+
+		if (goal === '') return fail(400, { message: 'Describe the flow you want.' });
+		if (goal.length > MAX_GOAL_CHARACTERS) {
+			return fail(400, { message: `Keep it under ${MAX_GOAL_CHARACTERS} characters.` });
+		}
+		// The worker runs a request in the site's current crawl, so the viewport needs one.
+		const crawls = await sourceCrawls(await db(), params.slug);
+		if (!crawls.some((crawl) => crawl.viewport === viewport)) {
+			return fail(400, { message: `This site has not been explored on ${viewport} yet.` });
+		}
+
+		await createFlowRequest(params.slug, viewport as Viewport, goal);
 	}
 };

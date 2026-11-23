@@ -87,7 +87,8 @@
 			{#if searching}
 				Search looks at names, hosts and descriptions. Try a shorter term, or add this site.
 			{:else}
-				Add a website and we'll capture its screens, states and UI elements for you to browse here.
+				Add a website and we'll explore it and capture its flows, screens and UI elements for you to
+				browse here.
 			{/if}
 		</p>
 

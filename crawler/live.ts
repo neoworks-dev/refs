@@ -50,7 +50,9 @@ export async function reportLiveGoal(db: Surreal, page: Page, step: LiveGoalStep
 
 /** Takes a finished goal out of the live panel. */
 export async function endLiveGoal(db: Surreal, crawl: RecordId, slot: number): Promise<void> {
-	await db.query('DELETE live_goal WHERE crawl = $crawl AND slot = $slot', { crawl, slot }).collect();
+	await db
+		.query('DELETE live_goal WHERE crawl = $crawl AND slot = $slot', { crawl, slot })
+		.collect();
 }
 
 /** Clears a crawl's rows when its exploration ends, including those of goals that crashed. */

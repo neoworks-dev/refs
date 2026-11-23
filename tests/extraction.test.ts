@@ -2,7 +2,6 @@
 // buttons and menu triggers of a page, whatever markup the site's framework wraps them in.
 import { afterAll, beforeAll, describe, expect, test } from 'bun:test';
 import { closeBrowser, loadPage, openBrowser, type BrowserSession } from '../crawler/capture.ts';
-import { chooseClickTargets } from '../crawler/rules.ts';
 import { fixtureUrl } from './support.ts';
 
 let session: BrowserSession;
@@ -56,35 +55,5 @@ describe('button detection', () => {
 
 		const getStarted = elements.find((element) => element.name === 'Get started');
 		expect(getStarted?.looksLikeButton).toBe(true);
-	});
-});
-
-describe('click candidates', () => {
-	test('a destructive control that opens a menu is offered by the page but never chosen to click', async () => {
-		const page = await loadFixture('destructive-controls.html');
-
-		const targets = await page.evaluate(() => window.pageInspector!.clickTargets());
-		const chosen = chooseClickTargets(targets, 10).map((target) => target.name);
-
-		// The page extraction cannot tell harmless from harmful; the crawler's rules decide.
-		expect(targets.map((target) => target.name)).toContain('Delete account');
-		expect(chosen).toEqual(['Products', 'Resources']);
-	});
-
-	test('a click target records which part of the page it sits in', async () => {
-		const page = await loadFixture('destructive-controls.html');
-
-		const targets = await page.evaluate(() => window.pageInspector!.clickTargets());
-
-		// Stored on the action, so flows can tell main navigation clicks from clicks in the content.
-		expect(targets.find((target) => target.name === 'Products')?.region).toBe('nav');
-	});
-
-	test('form submit buttons are not click targets at all', async () => {
-		const page = await loadFixture('destructive-controls.html');
-
-		const targets = await page.evaluate(() => window.pageInspector!.clickTargets());
-
-		expect(targets.map((target) => target.name)).not.toContain('Save changes');
 	});
 });

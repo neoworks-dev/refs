@@ -1,0 +1,162 @@
+Mobbin's web flows for GitHub, extracted on 2026-10-13 from the flow tree on Mobbin's GitHub page (160 entries). Indented entries continue from the one above them. Entries that were collapsed in Mobbin's tree when it was saved, like "Creating a pull request" and "View branch activity", may have children of their own that are not listed here. Some flows are ones our agent must never do, such as deleting an account, changing the password, inviting collaborators or paying, so no plan should reach full coverage.
+
+- Onboarding
+- Dashboard
+  - Following (Dashboard)
+  - Showing less activity
+- Creating a repository
+- Repository detail
+  - Creating a branch (repository)
+    - Creating a pull request
+  - Branches
+    - Creating a branch
+    - View branch activity
+  - Copying a link
+  - Creating a file
+  - Uploading files
+  - Adding a codespace
+    - View an image
+    - Changing panel position
+    - Hiding panel
+    - Searching file
+    - Resuming a codespace
+    - Toggling a sidebar
+    - Customizing layout
+    - Searching command palette
+    - Switching to dark mode (Codespace)
+  - Editing a file
+  - Editing repository details
+  - Creating a release
+    - Creating a tag
+    - Releases
+  - Editing notifications
+  - Starring a repository
+  - Creating a list
+  - Issues
+    - Labels
+  - Pull requests
+    - Pull request detail
+  - Actions
+    - Searching Actions
+    - Selecting a workflow
+    - All workflows
+  - Creating a new project
+    - Adding an item
+    - Moving to a column
+    - Archiving an item
+    - Moving an item
+    - View an item
+    - Hiding a column
+    - Adding a new column
+    - Switching project layout
+    - Sorting by group
+    - Adding a view
+    - Insights (Project)
+    - Editing project description
+    - Workflows
+    - Archived items
+    - Settings (Project)
+    - Copying a project
+  - Projects
+    - Closing a project
+  - Security
+    - Setting up a security policy
+  - Insights (Repository)
+  - Settings (Repository)
+    - Editing general settings
+    - Changing repository visibility
+    - Adding a collaborator
+    - Enabling interaction limits
+    - Adding a new rule
+    - Setting up enterprise trial
+    - Setting up email notifications
+- Explore
+  - Subscribing to email updates
+  - Topics
+    - Starring a topic
+  - Trending
+    - Filtering by language
+    - Public repository detail
+    - View a developer profile
+    - Developer profile detail
+  - Collections
+  - GitHub Sponsors
+    - Become a sponsor
+- Marketplace
+  - Filtering by app category
+  - App detail
+    - Subscribing to free trial
+    - Canceling free trial (Apps)
+- Searching GitHub
+  - Searching by advanced search
+- Importing a repository
+- Creating a gist
+- Notifications
+  - Marking as done
+  - Bookmarking a notification
+- Editing a status
+  - Adding an emoji
+- Your profile
+  - Editing pinned items
+    - Reordering pinned items
+  - Editing contribution settings
+  - Hiding activity details
+- Your repositories
+  - Deleting a list
+- Your codespaces
+- Setting up an organization
+  - Adding an organization member
+- Organization detail
+  - Completing organization onboarding
+    - Creating a branch protection rule
+  - Creating a new team
+    - Adding a member
+  - Managing a member
+  - Changing role of a member
+  - Settings (Organization)
+    - Uploading a profile picture
+    - Accepting customer agreement
+    - Editing member privileges
+    - Enabling two-factor authentication (organization)
+    - Setting up personal access tokens
+- Joining the GitHub Sponsors waitlist
+- Your sponsors
+  - Editing profile details
+  - Preview sponsors profile
+  - Setting up a goal
+  - Selecting tier rewards
+    - Editing sponsor tiers
+    - Editing a monthly tier
+  - Drafting an update
+  - Creating a Stripe Connect account
+  - Disabling sponsors account
+- Your gist
+- Upgrade plan
+- Trying GitHub Copilot
+- Disabling a feature preview
+- Logging out
+- Settings
+  - Switching account
+  - Editing public profile
+    - Uploading profile photo
+  - Exporting data
+  - Deleting an account
+  - Switching to dark mode
+  - Updating theme preferences
+  - Updating notification settings
+  - Plans and usage
+    - Canceling a trial (GitHub Copilot)
+    - Getting a usage report
+  - Redeeming a coupon
+  - Adding an email address
+  - Unsubscribing a newsletter
+  - Changing password
+  - Enabling two-factor authentication
+  - Blocking a user
+    - Adding a note
+  - Disabling alerts
+  - Suspending an application
+  - Uninstalling an application
+- Joining an organization
+- Logging in
+  - Resetting password

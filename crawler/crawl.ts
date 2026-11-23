@@ -1,21 +1,11 @@
-// One crawl: pops the best URL from the frontier, captures it, queues its links and explores its
-// in-page states (menus, dialogs, tabs), until the frontier is empty or a limit is reached.
-import type { Page } from 'playwright';
+// One crawl: opens the landing page and captures it, signs up for a demo account when the site
+// has one, has the model plan the flows worth recording, and tries each of them (explore.ts).
+import type { Browser } from 'playwright';
 import type { Surreal } from 'surrealdb';
 import { localMedia, type MediaStore } from '#lib/server/media.ts';
 import { RecordId } from '#lib/server/surreal.ts';
 import type { Rect } from '#lib/types.ts';
-import {
-	captureScreen,
-	closeBrowser,
-	computeDomSig,
-	dHash,
-	hammingDistance,
-	loadPage,
-	openBrowser,
-	viewportScreenshot,
-	type CapturedScreen
-} from './capture.ts';
+import { closeBrowser, launchBrowser, loadPage, openContext } from './capture.ts';
 import { buttonKey } from './dedupe.ts';
 import {
 	finishCrawl,
@@ -26,35 +16,16 @@ import {
 	type CrawlJob,
 	type SiteRow
 } from './jobs.ts';
-import type { ClickTarget } from './page.ts';
-import {
-	displayPath,
-	fetchRobots,
-	chooseClickTargets,
-	isCrawlable,
-	isSameSite,
-	normalizeUrl,
-	pathShape,
-	scoreLink,
-	urlKey,
-	type LinkRegion,
-	type Robots
-} from './rules.ts';
+import { enrichCrawl } from './enrich.ts';
+import { DEFAULT_MAX_TRAJECTORIES, captureLanding, exploreSite, type Landing } from './explore.ts';
+import { clearLiveGoals } from './live.ts';
+import { isSameSite, normalizeUrl, type LinkRegion } from './rules.ts';
 import { applySiteMetadata, setCover } from './site-metadata.ts';
-import { enrichCrawl, isModelServiceReachable } from './enrich.ts';
-import { DEFAULT_MAX_TRAJECTORIES, exploreCrawl } from './explore.ts';
-import { cutFlows } from './flows.ts';
-import { recordFlowVideosInNewProcess } from './videos.ts';
+import { ScreenIndex } from './trajectory.ts';
 
 /** Where screenshots and crops are written; the SvelteKit app serves the same directory. */
 export const MEDIA_ROOT = process.env.MEDIA_DIR ?? 'data/media';
 
-/** A site has many pages of the same template (/blog/a, /blog/b); a few of each is enough. */
-const MAX_PAGES_PER_SHAPE = 3;
-/** Pages with identical structure are the same template even when their URLs look different. */
-const MAX_PAGES_PER_DOM_SIG = 3;
-/** Pause between page loads, to be polite to the server. */
-const POLITENESS_DELAY_MS = 500;
 /** How often the crawl status is re-read to notice a cancel from the UI. */
 const CANCEL_CHECK_INTERVAL_MS = 2000;
 
@@ -69,8 +40,6 @@ export class CrawlCancelled extends Error {
 export class CrawlContext {
 	/** Captured screens (pages and states). */
 	screens = 0;
-	/** Captured in-page states, a subset of `screens`. */
-	states = 0;
 	elements = 0;
 	/** Capture order, stored as `screen.seq`. */
 	nextSeq = 0;
@@ -171,47 +140,12 @@ export async function executeCrawl(
 		}
 		return;
 	}
-	await processFinishedCrawl(db, job, signal);
-}
-
-/**
- * Cuts the flows of a finished crawl, has the models fill in page types, section labels,
- * embeddings and flow names, and lets them explore the site toward goals of their own. None of it
- * is part of the capture, so a failure only gets logged and the crawl stays done: the model
- * service may simply not be running, and `bun run flows`, `bun run enrich` and `bun run explore`
- * catch up later.
- */
-async function processFinishedCrawl(
-	db: Surreal,
-	job: CrawlJob,
-	signal: AbortSignal
-): Promise<void> {
-	try {
-		await cutFlows(db, String(job.id.id));
-		await recordFlowVideosInNewProcess(String(job.id.id));
-	} catch (error) {
-		console.warn(
-			`cutting or recording flows failed: ${error instanceof Error ? error.message : error}`
-		);
-	}
+	// The models describe what was captured. That is not part of the capture, so a failure only
+	// gets logged and the crawl stays done: `bun run enrich` catches up later.
 	try {
 		await enrichCrawl(db, job.id);
 	} catch (error) {
 		console.warn(`enrichment skipped: ${error instanceof Error ? error.message : error}`);
-	}
-	try {
-		// Exploration needs the page types and descriptions that enrichment just wrote, and the
-		// model service to plan and to steer the browser. Its new screens and flows are enriched
-		// in a second pass.
-		if (
-			(job.max_trajectories ?? DEFAULT_MAX_TRAJECTORIES) > 0 &&
-			(await isModelServiceReachable())
-		) {
-			await exploreCrawl(db, job.id, { signal });
-			await enrichCrawl(db, job.id);
-		}
-	} catch (error) {
-		console.warn(`exploration skipped: ${error instanceof Error ? error.message : error}`);
 	}
 }
 
@@ -248,7 +182,30 @@ export async function createCrawlContext(
 async function runCrawl(db: Surreal, job: CrawlJob, signal: AbortSignal): Promise<void> {
 	const ctx = await createCrawlContext(db, job, signal);
 
-	const { browser, context, userAgent } = await openBrowser(job.viewport);
+	// One browser for the whole crawl, with a context of its own for the landing page and for every
+	// flow. Launching a browser per flow made the second launch fail under Bun: Chrome exited a few
+	// seconds in and Playwright never noticed.
+	const browser = await launchBrowser();
+	try {
+		const screenIndex = new ScreenIndex([]);
+		const landing = await captureLandingPage(ctx, browser, screenIndex);
+		const maxFlows = job.max_trajectories ?? DEFAULT_MAX_TRAJECTORIES;
+		if (maxFlows > 0) await exploreSite({ ctx, browser, screenIndex, landing, maxFlows });
+	} finally {
+		await closeBrowser(browser);
+		await clearLiveGoals(db, job.id);
+		await db.query('UPDATE $id SET activity = NONE', { id: job.id }).collect();
+	}
+}
+
+/** Captures the site's landing page as the crawl's first screen, and learns the site's name, icon and cover from it. */
+async function captureLandingPage(
+	ctx: CrawlContext,
+	browser: Browser,
+	screenIndex: ScreenIndex
+): Promise<Landing> {
+	await ctx.setActivity('Capturing the landing page');
+	const { context } = await openContext(browser, ctx.job.viewport);
 	try {
 		const page = await context.newPage();
 		// Pop-ups (target=_blank links, OAuth windows) are never wanted; native dialogs would block the page.
@@ -257,343 +214,27 @@ async function runCrawl(db: Surreal, job: CrawlJob, signal: AbortSignal): Promis
 		});
 		page.on('dialog', (dialog) => void dialog.dismiss());
 
-		const robots = await fetchRobots(new URL(ctx.site.url).origin, userAgent);
-		await new PageCrawler(ctx, page, robots).run();
-	} finally {
-		await closeBrowser(browser);
-	}
-}
-
-// --- frontier ----------------------------------------------------------------------------------
-
-interface Candidate {
-	url: string;
-	depth: number;
-	/** Higher scores are visited first. */
-	score: number;
-	/** Page screen whose link led here (undefined for the start URL). */
-	fromScreen?: string;
-	label: string;
-	/** Where on the source screen the link sat. */
-	region: LinkRegion;
-	/** Rect of the link on the source screen, when it was visible. */
-	rect?: Rect;
-}
-
-/** Best-first queue of URLs still to visit. */
-class Frontier {
-	private readonly pending = new Map<string, Candidate>();
-	/** Every key ever added, so a URL is never queued twice, even after it was visited. */
-	private readonly known = new Set<string>();
-
-	/** Adds a candidate. A better-scoring duplicate that's still waiting replaces the old one. */
-	add(candidate: Candidate): void {
-		const key = urlKey(candidate.url);
-		const waiting = this.pending.get(key);
-		if (waiting) {
-			if (candidate.score > waiting.score) this.pending.set(key, candidate);
-			return;
+		const response = await loadPage(page, ctx.site.url, { waitForBanner: true });
+		if (response !== null && response.status() >= 400) {
+			throw new Error(`The landing page answered HTTP ${response.status()}`);
 		}
-		if (this.known.has(key)) return;
-		this.known.add(key);
-		this.pending.set(key, candidate);
-	}
-
-	/** Marks a URL as handled (e.g. the final URL after a redirect) without queueing it. */
-	markKnown(url: string): void {
-		const key = urlKey(url);
-		this.known.add(key);
-		this.pending.delete(key);
-	}
-
-	isKnown(url: string): boolean {
-		return this.known.has(urlKey(url));
-	}
-
-	/** Removes and returns the highest-scoring candidate; ties go to the one added first. */
-	pop(): Candidate | undefined {
-		let bestKey: string | undefined;
-		let best: Candidate | undefined;
-		for (const [key, candidate] of this.pending) {
-			if (!best || candidate.score > best.score) {
-				best = candidate;
-				bestKey = key;
-			}
-		}
-		if (bestKey !== undefined) this.pending.delete(bestKey);
-		return best;
-	}
-}
-
-// --- the crawl loop ------------------------------------------------------------------------------
-
-/** Click exploration only runs on pages up to this depth, with this many clicks per page. */
-const CLICK_MAX_DEPTH = 1;
-const MAX_CLICKS_PER_PAGE = 5;
-/** Share of max_screens that in-page states may use, so exploration can't starve real pages. */
-const MAX_STATE_SHARE = 0.35;
-/** Viewport images whose dHash differs by at least this many bits count as a visual change. */
-export const STATE_HASH_DISTANCE = 6;
-/** Two states of the same page closer than this are the same state reached twice. */
-export const SAME_STATE_HASH_DISTANCE = 3;
-/** Time for a menu or dialog to animate open (and for a navigation to start). */
-const AFTER_CLICK_MS = 700;
-
-class PageCrawler {
-	private readonly frontier = new Frontier();
-	/** Captured pages per path shape (first segment + segment count). */
-	private readonly pagesPerShape = new Map<string, number>();
-	/** Captured pages per dom_sig. */
-	private readonly pagesPerDomSig = new Map<string, number>();
-	private lastError = '';
-	/** Cookie banners are waited for on the first page load only; later pages carry the consent cookie. */
-	private hasLoadedAPage = false;
-
-	constructor(
-		private readonly ctx: CrawlContext,
-		private readonly page: Page,
-		private readonly robots: Robots
-	) {}
-
-	async run(): Promise<void> {
-		const { ctx } = this;
-		this.frontier.add({
-			url: ctx.site.url,
-			depth: 0,
-			score: Infinity,
-			label: '',
-			region: 'other'
-		});
-
-		for (;;) {
-			await ctx.throwIfStopped();
-			if (ctx.screens >= ctx.job.max_screens) break;
-			const candidate = this.frontier.pop();
-			if (!candidate) break;
-
-			try {
-				await this.visit(candidate);
-			} catch (error) {
-				// One broken page (timeout, download, crash) must not end the crawl.
-				if (error instanceof CrawlCancelled) throw error;
-				this.lastError = error instanceof Error ? error.message.split('\n')[0] : String(error);
-				console.warn(`  skipped ${candidate.url}: ${this.lastError}`);
-			}
-			await this.page.waitForTimeout(POLITENESS_DELAY_MS);
+		// Without a landing page there is nothing to crawl, so say where it went instead of
+		// failing later with something vaguer.
+		const arrivedAt = normalizeUrl(page.url());
+		if (arrivedAt === undefined || !isSameSite(arrivedAt, ctx.site.host)) {
+			throw new Error(`The landing page redirected off the site, to ${page.url()}`);
 		}
 
-		if (ctx.screens === 0) throw new Error(`Could not capture any page. ${this.lastError}`.trim());
-	}
-
-	/** Loads one candidate and captures it unless it is a duplicate, off-site or disallowed. */
-	private async visit(candidate: Candidate): Promise<void> {
-		const { ctx, page } = this;
-		const isStartPage = candidate.depth === 0;
-		if (!isStartPage && !this.hasShapeRoom(candidate.url)) return;
-		if (!isStartPage && !this.robots.isAllowed(displayPath(candidate.url))) return;
-
-		await ctx.setActivity(`Capturing ${displayPath(candidate.url)}`);
-		const response = await loadPage(page, candidate.url, { waitForBanner: !this.hasLoadedAPage });
-		this.hasLoadedAPage = true;
-		const contentType = response?.headers()['content-type'] ?? '';
-		if (response && (response.status() >= 400 || !contentType.includes('html'))) {
-			throw new Error(`HTTP ${response.status()} ${contentType}`.trim());
-		}
-
-		// Redirects can land on a page we already have, or leave the site.
-		const finalUrl = normalizeUrl(page.url());
-		if (!finalUrl || !isSameSite(finalUrl, ctx.site.host)) {
-			// Without a start page there is nothing to crawl, so say where it went instead of
-			// silently ending with "could not capture any page".
-			if (isStartPage) throw new Error(`The start page redirected off the site, to ${page.url()}`);
-			return;
-		}
-		const wasRedirected = urlKey(finalUrl) !== urlKey(candidate.url);
-		if (wasRedirected && this.frontier.isKnown(finalUrl)) return;
-		this.frontier.markKnown(finalUrl);
-		if (!isStartPage && !this.hasShapeRoom(finalUrl)) return;
-
-		const domSig = await computeDomSig(page);
-		if (!isStartPage && (this.pagesPerDomSig.get(domSig) ?? 0) >= MAX_PAGES_PER_DOM_SIG) return;
-
-		const screen = await captureScreen({
-			page,
-			ctx,
-			kind: 'page',
-			url: finalUrl,
-			depth: candidate.depth,
-			domSig
-		});
-		const shape = pathShape(finalUrl);
-		this.pagesPerShape.set(shape, (this.pagesPerShape.get(shape) ?? 0) + 1);
-		this.pagesPerDomSig.set(domSig, (this.pagesPerDomSig.get(domSig) ?? 0) + 1);
-		if (candidate.fromScreen) {
-			await ctx.createAction(
-				candidate.fromScreen,
-				screen.id,
-				'navigate',
-				candidate.label,
-				candidate.region,
-				candidate.rect
-			);
-		}
-
-		if (isStartPage) await this.recordSiteDetails(screen);
-		if (candidate.depth < ctx.job.max_depth)
-			await this.queueLinks(screen, finalUrl, candidate.depth);
-
-		// States may use only part of max_screens, so exploration can't starve the real pages.
-		const stateBudget = Math.max(1, Math.floor(ctx.job.max_screens * MAX_STATE_SHARE));
-		const hasRoom = ctx.screens < ctx.job.max_screens && ctx.states < stateBudget;
-		if (candidate.depth <= CLICK_MAX_DEPTH && hasRoom) {
-			await this.exploreClicks({ url: finalUrl, depth: candidate.depth, screen }, stateBudget);
-		}
-	}
-
-	private hasShapeRoom(url: string): boolean {
-		return (this.pagesPerShape.get(pathShape(url)) ?? 0) < MAX_PAGES_PER_SHAPE;
-	}
-
-	/** Site name, description and icon, and the start page as the card preview. Never fatal. */
-	private async recordSiteDetails(screen: CapturedScreen): Promise<void> {
+		const landing = await captureLanding(ctx, page, screenIndex, false);
 		try {
-			await applySiteMetadata(this.ctx, this.page);
-			await setCover(this.ctx, screen.id);
+			await applySiteMetadata(ctx, page);
+			await setCover(ctx, landing.screen.id);
 		} catch (error) {
+			// The name, icon and cover are nice to have; the flows are worth more than losing them.
 			console.warn(`  site details failed: ${error instanceof Error ? error.message : error}`);
 		}
+		return landing;
+	} finally {
+		await closeBrowser(context);
 	}
-
-	/** Adds the page's same-site links to the frontier, scored by where they sit and what they point at. */
-	private async queueLinks(screen: CapturedScreen, pageUrl: string, depth: number): Promise<void> {
-		const links = await this.page.evaluate(() => window.pageInspector!.links());
-		for (const link of links) {
-			const url = normalizeUrl(link.href);
-			if (!url || urlKey(url) === urlKey(pageUrl)) continue;
-			if (!isSameSite(url, this.ctx.site.host) || !isCrawlable(url)) continue;
-			// A link only gets an edge rect if it lies inside the (capped) full-page image.
-			const rect =
-				link.rect && link.rect.y + link.rect.h <= screen.fullHeight ? link.rect : undefined;
-			this.frontier.add({
-				url,
-				depth: depth + 1,
-				score: scoreLink(url, depth + 1, link.region),
-				fromScreen: screen.id,
-				label: link.text,
-				region: link.region,
-				rect
-			});
-		}
-	}
-
-	// --- click exploration -----------------------------------------------------------------------
-
-	/**
-	 * Clicks menu triggers, tabs, popups and accordions on a page and captures the clicks that
-	 * visibly change it as 'state' screens. Header menu triggers are tried first; destructive or
-	 * committing controls and duplicate labels are never clicked.
-	 */
-	private async exploreClicks(target: ExplorationTarget, stateBudget: number): Promise<void> {
-		const { ctx, page } = this;
-		const targets = await page.evaluate(() => window.pageInspector!.clickTargets());
-		const chosen = chooseClickTargets(targets, MAX_CLICKS_PER_PAGE);
-
-		const capturedHashes: string[] = [];
-		for (const [position, clickTarget] of chosen.entries()) {
-			if (ctx.screens >= ctx.job.max_screens || ctx.states >= stateBudget) return;
-			await ctx.throwIfStopped();
-			await ctx.setActivity(`Clicking '${clickTarget.name}' on ${displayPath(target.url)}`);
-
-			try {
-				// Every click starts from a fresh load so states don't build on each other. The first
-				// one reuses the page we just captured, which hasn't been touched.
-				let toClick = clickTarget;
-				if (position > 0) {
-					await loadPage(page, target.url, { waitForBanner: false });
-					const reloaded = await page.evaluate(() => window.pageInspector!.clickTargets());
-					const sameControl = reloaded.find((candidate) => candidate.name === clickTarget.name);
-					if (!sameControl) continue;
-					toClick = sameControl;
-				}
-				await this.clickAndCapture(target, toClick, capturedHashes);
-			} catch (error) {
-				if (error instanceof CrawlCancelled) throw error;
-				console.warn(
-					`  click '${clickTarget.name}' failed: ${error instanceof Error ? error.message : error}`
-				);
-			}
-		}
-	}
-
-	/**
-	 * Clicks a control and works out what happened: it navigated (a link we hadn't seen, queued),
-	 * it changed the page (captured as a state) or nothing visible happened (ignored).
-	 */
-	private async clickAndCapture(
-		target: ExplorationTarget,
-		clickTarget: ClickTarget,
-		capturedHashes: string[]
-	): Promise<void> {
-		const { ctx, page } = this;
-		await page.evaluate(() => window.pageInspector!.snapshotVisible());
-		// A real mouse click at the control's centre, as a user would: it also triggers hover menus.
-		// (Page coordinates equal viewport coordinates because the page is scrolled to the top.)
-		await page.mouse.click(
-			clickTarget.rect.x + clickTarget.rect.w / 2,
-			clickTarget.rect.y + clickTarget.rect.h / 2
-		);
-		await page.waitForTimeout(AFTER_CLICK_MS);
-
-		if (urlKey(page.url()) !== urlKey(target.url)) {
-			const destination = page.url();
-			if (isSameSite(destination, ctx.site.host) && isCrawlable(destination)) {
-				this.frontier.add({
-					url: destination,
-					depth: target.depth + 1,
-					score: scoreLink(destination, target.depth + 1, 'nav'),
-					fromScreen: target.screen.id,
-					label: clickTarget.name,
-					region: clickTarget.region,
-					rect: clickTarget.rect
-				});
-			}
-			return;
-		}
-
-		const newPanels = await page.evaluate(() => window.pageInspector!.newPanels());
-		const imageHash = await dHash(await viewportScreenshot(page));
-		const changedLook = hammingDistance(target.screen.imageHash, imageHash) >= STATE_HASH_DISTANCE;
-		const openedPanel = newPanels.some((panel) => panel.hasPanelRole);
-		if (!openedPanel && !changedLook) return;
-		if (capturedHashes.some((seen) => hammingDistance(seen, imageHash) < SAME_STATE_HASH_DISTANCE))
-			return;
-		capturedHashes.push(imageHash);
-
-		const state = await captureScreen({
-			page,
-			ctx,
-			kind: 'state',
-			url: page.url(),
-			depth: target.depth,
-			domSig: await computeDomSig(page),
-			baseline: target.screen.foundElements,
-			newPanels
-		});
-		ctx.states++;
-		await ctx.createAction(
-			target.screen.id,
-			state.id,
-			'click',
-			clickTarget.name,
-			clickTarget.region,
-			clickTarget.rect
-		);
-	}
-}
-
-/** The page that click exploration is working on. */
-interface ExplorationTarget {
-	url: string;
-	depth: number;
-	screen: CapturedScreen;
 }

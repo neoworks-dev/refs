@@ -1,0 +1,57 @@
+<!doctype html>
+<title>Consent wall that cannot be accepted</title>
+<style>
+	body {
+		margin: 0;
+		font-family: sans-serif;
+		/* The scroll lock a consent wall puts on the page. */
+		overflow: hidden;
+	}
+	main {
+		height: 3000px;
+	}
+	.privacy-section {
+		padding: 16px;
+		background: #eef;
+	}
+	.backdrop {
+		position: fixed;
+		inset: 0;
+		z-index: 900;
+		background: #0008;
+	}
+	/* Nothing says "cookie" in the markup, and the only buttons are "settings" and "reject". */
+	.wall {
+		position: fixed;
+		left: 20%;
+		right: 20%;
+		top: 20%;
+		z-index: 901;
+		padding: 24px;
+		background: white;
+	}
+	/* A footer fixed to the bottom, with a link about privacy: page content, never hidden. */
+	.footer {
+		position: fixed;
+		left: 0;
+		right: 0;
+		bottom: 0;
+		padding: 8px;
+		background: #ddd;
+	}
+</style>
+<main>
+	<h1>Shop</h1>
+	<section class="privacy-section">
+		<h2>Your privacy</h2>
+		<p>We take privacy seriously. Read how we handle your data.</p>
+		<button>Accept the privacy policy</button>
+	</section>
+</main>
+<div class="backdrop"></div>
+<div class="wall">
+	<p>We and our partners use cookies and tracking technologies.</p>
+	<button>Reject all</button>
+	<button>Manage settings</button>
+</div>
+<div class="footer"><a href="#privacy">Privacy policy</a> <a href="#terms">Terms</a></div>

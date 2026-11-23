@@ -23,8 +23,8 @@ fi
 
 cd /workspace/refs/ml
 # The default group adds Playwright for the evaluation, which the pod doesn't run.
-uv sync --no-default-groups
+uv sync
 # About 45 GB the first time; already downloaded files are skipped.
-uv run --no-default-groups serve download --profile "${REFS_PROFILE:-a100}"
+uv run serve download --profile "${REFS_PROFILE:-a100}"
 
 echo "Ready. Start the models with: bash /workspace/refs/ml/runpod/start.sh"

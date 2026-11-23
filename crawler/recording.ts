@@ -63,6 +63,7 @@ export interface FlowRecording {
 /**
  * Starts recording a page. Call it once the page is where the recording should begin (after a
  * cookie banner was accepted, say), because the first frame is whatever the page shows right now.
+ * Consent banners that show up later are hidden for the whole recording.
  */
 export async function startRecording(page: Page, viewport: Viewport): Promise<FlowRecording> {
 	const size = VIEWPORT_SIZES[viewport];
@@ -71,6 +72,12 @@ export async function startRecording(page: Page, viewport: Viewport): Promise<Fl
 
 	await page.addInitScript(installPointerOverlay);
 	await page.evaluate(installPointerOverlay);
+	// A banner that appears mid-flow (after a delay, on a later page) must not reach a frame.
+	// Only in the top document: a banner in an iframe is hidden by hiding the iframe.
+	await page.addInitScript(() => {
+		if (window === window.top) window.pageInspector?.keepConsentBannersHidden();
+	});
+	await page.evaluate(() => window.pageInspector!.keepConsentBannersHidden());
 	// `size` has to be given: without it Playwright scales the video down to fit 800x800.
 	await page.screencast.start({ path: file, size });
 	const startedAt = Date.now();

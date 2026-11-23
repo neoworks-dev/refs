@@ -149,7 +149,9 @@
 							<div class="truncate text-[16px] font-medium">{flow.title || 'Untitled flow'}</div>
 							<div class="truncate text-[14px] text-neutral-500 dark:text-neutral-400">
 								{flow.site_name} · {flow.steps.length}
-								{flow.steps.length === 1 ? 'screen' : 'screens'}
+								{flow.steps.length === 1 ? 'screen' : 'screens'}{flow.source === 'request'
+									? ' · Requested'
+									: ''}
 							</div>
 						</div>
 					</a>
